@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <title>Apex Karting Real Telemetry - Live timing connection</title>
+  <title>Apex Karting Real Telemetry - Control REC manual</title>
   
   <!-- React & ReactDOM -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -122,7 +122,7 @@
         
         this.wsSocket = null;
         this.pollInterval = null;
-        this.isRecording = true;
+        this.isRecording = false; // DISABLED BY DEFAULT (Manual REC start)
         
         // Active Kart Registry
         this.kartRegistry = new Map();
@@ -157,13 +157,13 @@
       }
 
       start() {
-        console.log('[Apex Client] Listening for:', this.circuit.name);
+        console.log('[Apex Client] Initialized in standby mode:', this.circuit.name);
         
         window.addEventListener('beforeunload', this.handleBeforeUnload);
         window.addEventListener('pagehide', this.handleBeforeUnload);
         document.addEventListener('visibilitychange', this.handleVisibilityChange);
 
-        this.broadcastState(`🟢 BUSCANDO SESIÓN EN VIVO (${this.circuit.name})`);
+        this.broadcastState('⏸️ CAPTURA EN PAUSA (PULSA REC ON)');
 
         this.connectWebSocket();
         this.startHttpPollingFallback();
@@ -191,7 +191,7 @@
 
       setRecordingMode(enabled) {
         this.isRecording = enabled;
-        const statusMsg = this.isRecording ? '🔴 CAPTURA REAL EN TIEMPO REAL: ON' : '⏸️ CAPTURA EN PAUSA';
+        const statusMsg = this.isRecording ? '🔴 REGISTRANDO DATOS EN VIVO...' : '⏸️ CAPTURA EN PAUSA';
         this.broadcastState(statusMsg);
       }
 
@@ -213,28 +213,22 @@
 
       connectWebSocket() {
         try {
-          const wsPort = this.circuit.configPort + 3; // Official https port mapping (e.g. 9373 for Campillos)
+          const wsPort = this.circuit.configPort + 3;
           const wsUrl = `wss://www.apex-timing.com:${wsPort}/`;
           
-          console.log(`[WebSocket] Connecting directly to ${wsUrl}`);
           this.wsSocket = new WebSocket(wsUrl);
           
           this.wsSocket.onopen = () => {
-            console.log('[WebSocket] Connection established successfully!');
-            this.broadcastState('🔴 TELEMETRÍA REAL EN VIVO (WS)');
+            if (this.isRecording) {
+              this.broadcastState('🔴 TELEMETRÍA REAL EN VIVO (WS)');
+            }
           };
 
           this.wsSocket.onmessage = (event) => {
             if (!this.isRecording) return;
             this.processRawApexPayload(event.data);
           };
-
-          this.wsSocket.onerror = () => {
-            console.log('[WebSocket] Connection failed. Using HTTP fallback.');
-          };
-        } catch(e) {
-          console.log('[WebSocket] Error creating socket:', e);
-        }
+        } catch(e) {}
       }
 
       startHttpPollingFallback() {
@@ -242,7 +236,7 @@
           if (!this.isRecording) return;
 
           try {
-            const apiPort = this.circuit.configPort + 4; // Official live_ajax port mapping (e.g. 9374 for Campillos)
+            const apiPort = this.circuit.configPort + 4;
             const targetUrl = `https://www.apex-timing.com/live-timing/commonv2/functions/live_ajax.php?version=1.0.0&init=0&index=0&port=${apiPort}&counter=${this.pollCounter}&duration=100&id=${this.randomSessionId}&ignored=0`;
             const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
             
@@ -257,14 +251,12 @@
               const payload = parts.length >= 3 ? parts[2] : dataText;
               this.processRawApexPayload(payload);
             }
-          } catch(err) {
-            // Keep trying quietly
-          }
+          } catch(err) {}
         }, 3000);
       }
 
       processRawApexPayload(dataStr) {
-        if (!dataStr || dataStr.trim() === '') return;
+        if (!this.isRecording || !dataStr || dataStr.trim() === '') return;
 
         const lines = dataStr.split('\n');
         let hasUpdates = false;
@@ -407,7 +399,7 @@
                   : 'bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700'
               }`}
             >
-              <span>{isRecording ? '🔴 CAPTURA: ON' : '⏸️ CAPTURA: PAUSA'}</span>
+              <span>{isRecording ? '🔴 REC: ON' : '⏸️ REC: OFF'}</span>
             </button>
 
             <button
@@ -499,10 +491,12 @@
             <div className="flex-1 border-2 border-dashed border-zinc-800 rounded-2xl p-4 sm:p-6 flex flex-col items-center justify-center text-center">
               <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full border-4 border-race-purple border-t-transparent animate-spin mb-3"></div>
               <h3 className="text-xs sm:text-sm font-bold text-white uppercase">
-                {isRecording ? 'CONECTANDO A TELEMETRÍA EN VIVO...' : 'DETECTOR EN PAUSA'}
+                {isRecording ? 'CONECTANDO A TELEMETRÍA EN VIVO...' : 'CAPTURA EN PAUSA'}
               </h3>
               <p className="text-[11px] sm:text-xs text-zinc-400 mt-2 max-w-xs leading-relaxed">
-                Escuchando el cronometraje de <strong className="text-race-purple">{selectedCircuit.name}</strong>. En cuanto salgan karts a pista y registren pasos por meta, aparecerán aquí.
+                {isRecording 
+                  ? `Escuchando el cronometraje de ${selectedCircuit.name}. En cuanto salgan karts a pista y registren pasos por meta, aparecerán aquí.`
+                  : "Pulsa el botón 'REC: OFF' en la barra superior para activar la captura de datos en vivo de este circuito."}
               </p>
             </div>
           ) : (
@@ -714,8 +708,8 @@
     function App() {
       const [selectedCircuit, setSelectedCircuit] = useState(CIRCUITS_LIST[0]);
       const [classifiedKarts, setClassifiedKarts] = useState([]);
-      const [isRecording, setIsRecording] = useState(true);
-      const [statusText, setStatusText] = useState('CONECTANDO A APEX REAL...');
+      const [isRecording, setIsRecording] = useState(false); // DEFAULT: OFF (Manual REC start required)
+      const [statusText, setStatusText] = useState('⏸️ CAPTURA EN PAUSA (PULSA REC ON)');
       const [isLiveTimingOpen, setIsLiveTimingOpen] = useState(false);
       const [isConfigOpen, setIsConfigOpen] = useState(false);
 
