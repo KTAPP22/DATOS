@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <title>Apex Karting Real Telemetry - Mobile & Desktop</title>
+  <title>Apex Karting Real Telemetry - Live timing connection</title>
   
   <!-- React & ReactDOM -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -73,19 +73,15 @@
         id: 'kartcenter-campillos',
         name: '🏁 Kartcenter Campillos (Málaga)',
         url: 'https://www.apex-timing.com/live-timing/kartcenter-campillos/',
-        trackLength: '1.580m'
+        trackLength: '1.580m',
+        configPort: 9370
       },
       {
         id: 'ariza-racing',
         name: '🏁 Karting Ariza Racing Circuit',
         url: 'https://www.apex-timing.com/live-timing/ariza-racing-circuit/',
-        trackLength: '1.240m'
-      },
-      {
-        id: 'lucas-guerrero',
-        name: '🏁 Kartodromo Lucas Guerrero',
-        url: 'https://www.apex-timing.com/live-timing/lucas-guerrero/',
-        trackLength: '1.428m'
+        trackLength: '1.240m',
+        configPort: 8970
       }
     ];
 
@@ -117,21 +113,25 @@
       return `${sign}${deltaSeconds.toFixed(3)}`;
     }
 
-    // PERSISTENT ENGINE WITH MOBILE & DESKTOP TELEMETRY DATA PROTECTION
-    class PersistentApexEngine {
+    // HIGH PRECISION REAL APEX TIMING CLIENT (DIRECT WEBSOCKET + DYNAMIC HTTP FALLBACK)
+    class RealApexTimingClient {
       constructor(circuit, onUpdate, onAutoSavedNotification) {
         this.circuit = circuit;
         this.onUpdate = onUpdate;
         this.onAutoSavedNotification = onAutoSavedNotification;
         
-        this.pollInterval = null;
         this.wsSocket = null;
+        this.pollInterval = null;
         this.isRecording = true;
         
+        // Active Kart Registry
         this.kartRegistry = new Map();
-        this.hasActiveSessionStarted = false;
-        this.lastGridCount = 0;
+        
+        // Polling counter
+        this.pollCounter = 0;
+        this.randomSessionId = Math.floor(Math.random() * 1000000000) || 1;
 
+        // Auto-bound handlers
         this.handleBeforeUnload = this.handleBeforeUnload.bind(this);
         this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
 
@@ -146,7 +146,7 @@
             const parsed = JSON.parse(savedKarts);
             Object.keys(parsed).forEach(kart => {
               this.kartRegistry.set(kart, {
-                kartNumber: kart,
+                kartNumber: parsed[kart].kartNumber || kart,
                 drivers: new Set(parsed[kart].drivers || []),
                 lapsMs: parsed[kart].lapsMs || [],
                 bestLapMs: parsed[kart].bestLapMs || 0
@@ -157,17 +157,16 @@
       }
 
       start() {
-        console.log('[Mobile & Desktop Engine] Active for:', this.circuit.name);
+        console.log('[Apex Client] Listening for:', this.circuit.name);
         
         window.addEventListener('beforeunload', this.handleBeforeUnload);
         window.addEventListener('pagehide', this.handleBeforeUnload);
         document.addEventListener('visibilitychange', this.handleVisibilityChange);
 
-        this.broadcastState(`💾 DATOS RECUPERADOS (${this.circuit.name})`);
+        this.broadcastState(`🟢 BUSCANDO SESIÓN EN VIVO (${this.circuit.name})`);
 
         this.connectWebSocket();
-        this.pollApexLiveStream();
-        this.pollInterval = setInterval(() => this.pollApexLiveStream(), 3000);
+        this.startHttpPollingFallback();
       }
 
       stop() {
@@ -192,7 +191,7 @@
 
       setRecordingMode(enabled) {
         this.isRecording = enabled;
-        const statusMsg = this.isRecording ? '🔴 AUTOGUARDADO ACTIVADO' : '⏸️ CAPTURA EN PAUSA';
+        const statusMsg = this.isRecording ? '🔴 CAPTURA REAL EN TIEMPO REAL: ON' : '⏸️ CAPTURA EN PAUSA';
         this.broadcastState(statusMsg);
       }
 
@@ -212,143 +211,167 @@
         } catch(e) {}
       }
 
+      /**
+       * Connect directly to official Apex Timing WebSocket Server on port (configPort + 3)
+       */
       connectWebSocket() {
         try {
-          this.wsSocket = new WebSocket('wss://live.apex-timing.com/ws?room=kartcenter-campillos');
+          const wsPort = this.circuit.configPort + 3; // Official https port mapping (e.g. 9373 for Campillos)
+          const wsUrl = `wss://www.apex-timing.com:${wsPort}/`;
+          
+          console.log(`[WebSocket] Connecting directly to ${wsUrl}`);
+          this.wsSocket = new WebSocket(wsUrl);
+          
+          this.wsSocket.onopen = () => {
+            console.log('[WebSocket] Connection established successfully!');
+            this.broadcastState('🔴 TELEMETRÍA REAL EN VIVO (WS)');
+          };
+
           this.wsSocket.onmessage = (event) => {
             if (!this.isRecording) return;
-            try {
-              const packet = JSON.parse(event.data);
-              if (packet && packet.grid && Array.isArray(packet.grid)) {
-                this.processRealGridPayload(packet.grid);
-              }
-              if (packet && (packet.flag === 'CHEQUERED' || packet.sessionFinished)) {
-                this.autoSaveSession('BANDERA A CUADROS');
-              }
-            } catch(err) {}
+            this.processRawApexPayload(event.data);
           };
-        } catch(e) {}
-      }
 
-      async pollApexLiveStream() {
-        if (!this.isRecording) {
-          this.broadcastState('⏸️ CAPTURA EN PAUSA');
-          return;
-        }
-
-        try {
-          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(this.circuit.url)}`;
-          const response = await fetch(proxyUrl);
-          if (!response.ok) throw new Error('Fetch failed');
-          const htmlStr = await response.text();
-
-          const parsedGrid = this.extractRealDriversFromApexHTML(htmlStr);
-          
-          if (parsedGrid && parsedGrid.length > 0) {
-            this.hasActiveSessionStarted = true;
-            this.lastGridCount = parsedGrid.length;
-            this.processRealGridPayload(parsedGrid);
-          } else {
-            if (this.hasActiveSessionStarted && this.lastGridCount > 0) {
-              this.autoSaveSession('FIN DE TANDA EN APEX');
-            } else {
-              this.broadcastState(`🟢 EN ESPERA DE KARTS EN ${this.circuit.name}`);
-            }
-          }
-        } catch(err) {
-          this.broadcastState(`🔴 DATOS PROTEGIDOS EN MEMORIA`);
+          this.wsSocket.onerror = () => {
+            console.log('[WebSocket] Connection failed. Using HTTP fallback.');
+          };
+        } catch(e) {
+          console.log('[WebSocket] Error creating socket:', e);
         }
       }
 
-      extractRealDriversFromApexHTML(html) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-        const rows = doc.querySelectorAll('#tgrid tr, table.dyna tr, .grid_row, tr[data-id]');
-        const extracted = [];
+      /**
+       * Fallback HTTP Polling using official live_ajax.php API via CORS bypass proxy
+       */
+      startHttpPollingFallback() {
+        this.pollInterval = setInterval(async () => {
+          if (!this.isRecording) return;
 
-        rows.forEach((row, idx) => {
-          const cells = row.querySelectorAll('td, div');
-          if (cells.length >= 3) {
-            const kartText = row.querySelector('.kart, .kart_number, td:nth-child(2)')?.textContent?.trim();
-            const driverText = row.querySelector('.driver, .driver_name, td:nth-child(3)')?.textContent?.trim();
-            const bestLapText = row.querySelector('.best, .best_lap, td:nth-child(4)')?.textContent?.trim();
-            const lastLapText = row.querySelector('.last, .last_lap, td:nth-child(5)')?.textContent?.trim();
+          try {
+            const apiPort = this.circuit.configPort + 4; // Official live_ajax port mapping (e.g. 9374 for Campillos)
+            const targetUrl = `https://www.apex-timing.com/live-timing/commonv2/functions/live_ajax.php?version=1.0.0&init=0&index=0&port=${apiPort}&counter=${this.pollCounter}&duration=100&id=${this.randomSessionId}&ignored=0`;
+            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+            
+            const response = await fetch(proxyUrl);
+            if (!response.ok) throw new Error('CORS Proxy failed');
+            const dataText = await response.text();
 
-            if (kartText && kartText !== '' && !isNaN(parseInt(kartText))) {
-              extracted.push({
-                kart: kartText,
-                driver: driverText || '',
-                best: bestLapText || '',
-                last: lastLapText || bestLapText || ''
-              });
+            this.pollCounter += 1;
+            
+            if (dataText && dataText !== 'error' && !dataText.includes('Service Unavailable')) {
+              // Extract the packet content after metadata separation (@)
+              const parts = dataText.split('@');
+              const payload = parts.length >= 3 ? parts[2] : dataText;
+              this.processRawApexPayload(payload);
             }
+          } catch(err) {
+            // Keep trying quietly
           }
-        });
-
-        return extracted;
+        }, 3000);
       }
 
-      processRealGridPayload(gridData) {
-        if (!this.isRecording || !gridData || gridData.length === 0) return;
+      /**
+       * High-Performance Line parser for raw Apex timing data stream
+       */
+      processRawApexPayload(dataStr) {
+        if (!dataStr || dataStr.trim() === '') return;
 
-        gridData.forEach(row => {
-          const kartNum = String(row.kart || row.kartNumber || row.number || '').trim();
-          const driverName = String(row.driver || row.name || row.driver_name || '').trim();
-          const bestLapStr = String(row.best || row.bestLap || row.best_lap || '');
-          const lastLapStr = String(row.last || row.lastLap || row.last_lap || '');
-          
-          const bestMs = parseTimeToMs(bestLapStr);
-          const lastMs = parseTimeToMs(lastLapStr) || bestMs;
+        const lines = dataStr.split('\n');
+        let hasUpdates = false;
 
-          if (kartNum && kartNum !== '0' && kartNum !== '') {
-            if (!this.kartRegistry.has(kartNum)) {
-              this.kartRegistry.set(kartNum, {
-                kartNumber: kartNum,
-                drivers: new Set(),
-                lapsMs: [],
-                bestLapMs: bestMs || 0
-              });
-            }
+        lines.forEach(line => {
+          const parts = line.split('|');
+          if (parts.length >= 3) {
+            const cellId = parts[0];
+            const value = parts[2];
 
-            const kartEntry = this.kartRegistry.get(kartNum);
+            // Filter cells corresponding to driver rows (pattern: r[digits][suffix])
+            if (cellId.startsWith('r')) {
+              const match = cellId.match(/^(r\d+)(.*)$/);
+              if (match) {
+                const rowId = match[1];
+                const suffix = match[2];
 
-            if (driverName && driverName !== '' && !driverName.includes('Piloto ')) {
-              kartEntry.drivers.add(driverName);
-            }
+                if (!this.kartRegistry.has(rowId)) {
+                  this.kartRegistry.set(rowId, {
+                    kartNumber: '',
+                    drivers: new Set(),
+                    lapsMs: [],
+                    bestLapMs: 0
+                  });
+                }
 
-            if (lastMs > 0) {
-              kartEntry.lapsMs.push(lastMs);
-              if (!kartEntry.bestLapMs || lastMs < kartEntry.bestLapMs) {
-                kartEntry.bestLapMs = lastMs;
+                const entry = this.kartRegistry.get(rowId);
+                hasUpdates = true;
+
+                if (suffix === 'dr') {
+                  const driverName = value.replace(/&nbsp;/g, ' ').trim();
+                  if (driverName && !driverName.includes('Piloto') && driverName !== '') {
+                    entry.drivers.add(driverName);
+                  }
+                } else if (suffix === 'no') {
+                  entry.kartNumber = value.trim();
+                } else if (suffix === 'blp') {
+                  const bestMs = parseTimeToMs(value);
+                  if (bestMs > 0) {
+                    entry.bestLapMs = bestMs;
+                  }
+                } else if (suffix === 'llp') {
+                  const lastMs = parseTimeToMs(value);
+                  if (lastMs > 0) {
+                    entry.lapsMs.push(lastMs);
+                    if (!entry.bestLapMs || lastMs < entry.bestLapMs) {
+                      entry.bestLapMs = lastMs;
+                    }
+                  }
+                }
               }
             }
           }
         });
 
-        this.saveToLocalStorage();
-        this.broadcastState('🔴 REGISTRANDO DATOS EN VIVO...');
-      }
-
-      autoSaveSession(reason = 'FIN DE SESIÓN DETECTADO') {
-        if (this.kartRegistry.size === 0) return;
-
-        const sessionSummary = this.calculateAverageClassification();
-        this.hasActiveSessionStarted = false;
-        this.lastGridCount = 0;
-
-        this.saveToLocalStorage();
-
-        if (this.onAutoSavedNotification) {
-          this.onAutoSavedNotification(sessionSummary);
+        if (hasUpdates) {
+          this.saveToLocalStorage();
+          this.broadcastState('🔴 TELEMETRÍA REAL EN VIVO (APEX)');
         }
-
-        this.broadcastState(`🏁 SESIÓN GUARDADA AUTOMÁTICAMENTE`);
       }
 
       calculateAverageClassification() {
-        const results = [];
+        const kartsMap = new Map();
 
-        this.kartRegistry.forEach((entry, kartNum) => {
+        // Group rows data by physical Kart Number
+        this.kartRegistry.forEach((rowEntry) => {
+          const kartNum = rowEntry.kartNumber;
+          if (!kartNum || kartNum === '' || kartNum === '0') return;
+
+          if (!kartsMap.has(kartNum)) {
+            kartsMap.set(kartNum, {
+              kartNumber: kartNum,
+              drivers: new Set(),
+              lapsMs: [],
+              bestLapMs: 0
+            });
+          }
+
+          const kartEntry = kartsMap.get(kartNum);
+
+          rowEntry.drivers.forEach(d => {
+            if (d) kartEntry.drivers.add(d);
+          });
+
+          rowEntry.lapsMs.forEach(lap => {
+            if (lap > 0) kartEntry.lapsMs.push(lap);
+          });
+
+          if (rowEntry.bestLapMs > 0) {
+            if (!kartEntry.bestLapMs || rowEntry.bestLapMs < kartEntry.bestLapMs) {
+              kartEntry.bestLapMs = rowEntry.bestLapMs;
+            }
+          }
+        });
+
+        const results = [];
+        kartsMap.forEach((entry, kartNum) => {
           const validLaps = entry.lapsMs.filter(l => l > 0);
           const totalMs = validLaps.reduce((a, b) => a + b, 0);
           const avgMs = validLaps.length > 0 ? Math.round(totalMs / validLaps.length) : entry.bestLapMs;
@@ -362,6 +385,7 @@
           });
         });
 
+        // Sort strictly Best to Worst by average lap time
         return results.sort((a, b) => a.avgLapMs - b.avgLapMs);
       }
 
@@ -377,21 +401,17 @@
       resetCurrentCircuitData() {
         const keyKarts = `apex_karts_db_${this.circuit.id}`;
         this.kartRegistry.clear();
-        this.hasActiveSessionStarted = false;
-        this.lastGridCount = 0;
-
         localStorage.removeItem(keyKarts);
         this.broadcastState(`REINICIADOS DATOS DE: ${this.circuit.name}`);
       }
     }
 
-    // Responsive Mobile & Desktop Header
+    // Header Component
     function Header({ selectedCircuit, onSelectCircuit, totalKarts, statusText, isRecording, onToggleRecording, onResetCircuit, onOpenLiveTiming, onOpenConfig }) {
       return (
         <header className="w-full bg-black border-b border-zinc-800 flex flex-col shrink-0 select-none font-mono">
-          {/* Top Control Bar (Fully Mobile Responsive Grid) */}
+          {/* Top Control Bar */}
           <div className="flex flex-wrap items-center justify-between gap-1.5 px-2.5 py-2 border-b border-zinc-900 text-xs">
-            {/* ON / OFF Recording Button */}
             <button
               onClick={onToggleRecording}
               className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-black transition-all shadow-md active:scale-95 ${
@@ -400,22 +420,19 @@
                   : 'bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700'
               }`}
             >
-              <span>{isRecording ? '🔴 REC: ON' : '⏸️ REC: OFF'}</span>
+              <span>{isRecording ? '🔴 CAPTURA: ON' : '⏸️ CAPTURA: PAUSA'}</span>
             </button>
 
-            {/* LIVE TIMING BUTTON */}
             <button
               onClick={onOpenLiveTiming}
               className="bg-race-purple text-black font-mono font-black text-[11px] sm:text-xs px-3 py-1.5 rounded-xl hover:bg-emerald-400 transition-all active:scale-95 shadow-[0_0_12px_rgba(217,70,239,0.6)] flex items-center gap-1"
             >
-              <span>⏱️ TIMING</span>
+              <span>⏱️ TIMING EN DIRECTO</span>
             </button>
 
-            {/* RESET ONLY FOR THIS CIRCUIT & CONFIG */}
             <div className="flex items-center gap-1">
               <button
                 onClick={onResetCircuit}
-                title={`Borrar datos guardados solo de ${selectedCircuit.name}`}
                 className="bg-red-950/80 border border-race-red text-race-red font-mono text-[10px] sm:text-[11px] font-extrabold px-2 py-1 rounded-xl hover:bg-red-900 hover:text-white active:scale-95 transition-all"
               >
                 🗑️ REINICIAR
@@ -430,11 +447,11 @@
             </div>
           </div>
 
-          {/* Circuit Selector Dropdown (Mobile Responsive) */}
+          {/* Circuit Selector */}
           <div className="px-2.5 py-1.5 bg-zinc-950 border-b border-zinc-900 flex flex-col gap-1">
             <div className="flex items-center justify-between text-[10px] font-bold text-zinc-400">
-              <span className="truncate">CIRCUITO ACTIVO:</span>
-              <span className="text-race-purple font-bold shrink-0">LONGITUD: {selectedCircuit.trackLength}</span>
+              <span>CIRCUITO ACTIVO:</span>
+              <span className="text-race-purple font-bold">LONGITUD: {selectedCircuit.trackLength}</span>
             </div>
             
             <select
@@ -457,7 +474,7 @@
           <div className="px-2.5 py-1.5 bg-black flex items-center justify-between">
             <h1 className="text-sm sm:text-base font-black text-white flex items-center gap-1">
               <span>🏆</span>
-              <span className="text-race-purple text-glow-purple truncate">CLASIFICACIÓN POR MEDIA DE KART</span>
+              <span className="text-race-purple text-glow-purple">CLASIFICACIÓN POR MEDIA DE KART</span>
             </h1>
             <span className="text-[10px] sm:text-[11px] font-bold text-zinc-400 shrink-0">
               KARTS: <strong className="text-race-purple">{totalKarts}</strong>
@@ -467,7 +484,7 @@
       );
     }
 
-    // Main Kart Classifier Component (Mobile & Desktop Responsive)
+    // Main Kart Classifier Component
     function KartClassifier({ classifiedKarts, selectedCircuit, isRecording }) {
       const [selectedKart, setSelectedKart] = useState(null);
 
@@ -479,7 +496,7 @@
           <div className="bg-gradient-to-r from-zinc-950 via-purple-950/40 to-zinc-950 border-2 border-race-purple rounded-2xl p-2.5 sm:p-3 shadow-[0_0_20px_rgba(217,70,239,0.3)] shrink-0 flex items-center justify-between">
             <div className="min-w-0 pr-2">
               <span className="text-[9px] sm:text-[10px] text-race-purple font-extrabold uppercase tracking-wider flex items-center gap-1 truncate">
-                <span>🛡️ DATOS PROTEGIDOS (MÓVIL & PC)</span>
+                <span>🛡️ DATOS DE TIMING REAL EN VIVO</span>
               </span>
               <h2 className="text-[11px] sm:text-xs font-black text-white truncate">
                 CLASIFICACIÓN POR MEDIA ({selectedCircuit.name.split(' ')[1] || 'CAMPILLOS'})
@@ -495,10 +512,10 @@
             <div className="flex-1 border-2 border-dashed border-zinc-800 rounded-2xl p-4 sm:p-6 flex flex-col items-center justify-center text-center">
               <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full border-4 border-race-purple border-t-transparent animate-spin mb-3"></div>
               <h3 className="text-xs sm:text-sm font-bold text-white uppercase">
-                {isRecording ? 'CONEXIÓN MÓVIL Y AUTOGUARDADO ACTIVOS' : 'DETECTOR EN PAUSA'}
+                {isRecording ? 'CONECTANDO A TELEMETRÍA EN VIVO...' : 'DETECTOR EN PAUSA'}
               </h3>
               <p className="text-[11px] sm:text-xs text-zinc-400 mt-2 max-w-xs leading-relaxed">
-                Al terminar la tanda en <strong className="text-race-purple">{selectedCircuit.name}</strong>, el sistema calculará la media de cada kart y guardará los pilotos automáticamente.
+                Escuchando el cronometraje de <strong className="text-race-purple">{selectedCircuit.name}</strong>. En cuanto salgan karts a pista y registren pasos por meta, aparecerán aquí.
               </p>
             </div>
           ) : (
@@ -520,10 +537,9 @@
                         : 'border-zinc-800 hover:border-zinc-700'
                     }`}
                   >
-                    {/* Top Line (Rank, Kart Number, Lap Time) */}
+                    {/* Top Line */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 sm:gap-3 min-w-0 pr-2">
-                        {/* Position Badge */}
                         <div className={`flex items-center justify-center font-mono font-black text-sm sm:text-base w-8 h-8 sm:w-9 sm:h-9 rounded-xl shrink-0 ${
                           isBestAvg ? 'bg-race-purple text-black shadow-[0_0_12px_rgba(217,70,239,0.6)]' :
                           idx === 1 ? 'bg-purple-900 text-white' :
@@ -620,7 +636,7 @@
       );
     }
 
-    // LIVE TIMING MODAL COMPONENT (Mobile Optimized)
+    // LIVE TIMING MODAL COMPONENT
     function LiveTimingModal({ isOpen, onClose, selectedCircuit }) {
       if (!isOpen) return null;
 
@@ -675,7 +691,7 @@
         <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-3 font-mono">
           <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-md p-4 space-y-4">
             <div className="flex items-center justify-between border-b border-zinc-900 pb-2">
-              <h3 className="text-sm font-bold text-race-purple">⚙️ ADAPTADO PARA MÓVIL Y ORDENADOR</h3>
+              <h3 className="text-sm font-bold text-race-purple">⚙️ CONEXIÓN TIMING REAL</h3>
               <button onClick={onClose} className="text-zinc-400 hover:text-white font-bold text-sm">✕</button>
             </div>
 
@@ -689,9 +705,9 @@
               />
 
               <div className="bg-black p-3 border border-zinc-800 rounded-xl mt-3 space-y-1">
-                <span className="text-xs text-race-purple font-bold block">📱 VISTA 100% RESPONSIVE EN MÓVIL</span>
+                <span className="text-xs text-race-purple font-bold block">📱 VISTA 100% RESPONSIVE</span>
                 <p className="text-[10px] text-zinc-400 leading-relaxed">
-                  Mantiene exactamente la misma estructura y datos del ordenador, optimizando los botones y tarjetas para pantallas de smartphones sin distorsionar la vista.
+                  Conectado al servidor de Apex Timing de {selectedCircuit.name}. Todos los datos se actualizan automáticamente en tiempo real.
                 </p>
               </div>
             </div>
@@ -713,24 +729,18 @@
       const [classifiedKarts, setClassifiedKarts] = useState([]);
       const [isRecording, setIsRecording] = useState(true);
       const [statusText, setStatusText] = useState('CONECTANDO A APEX REAL...');
-      const [toastNotification, setToastNotification] = useState(null);
       const [isLiveTimingOpen, setIsLiveTimingOpen] = useState(false);
       const [isConfigOpen, setIsConfigOpen] = useState(false);
 
       const engineRef = useRef(null);
 
       useEffect(() => {
-        engineRef.current = new PersistentApexEngine(
+        engineRef.current = new RealApexTimingClient(
           selectedCircuit,
           (data) => {
             setClassifiedKarts(data.classifiedKarts);
             if (data.isRecording !== undefined) setIsRecording(data.isRecording);
             setStatusText(data.statusText);
-          },
-          (summary) => {
-            const msg = `🏁 ¡SESIÓN GUARDADA AUTOMÁTICAMENTE!\nSe han clasificado ${summary.length} karts por su media.`;
-            setToastNotification(msg);
-            setTimeout(() => setToastNotification(null), 5000);
           }
         );
 
@@ -759,13 +769,6 @@
 
       return (
         <div className="h-full w-full bg-black text-white flex flex-col overflow-hidden relative font-mono">
-          {toastNotification && (
-            <div className="absolute top-12 left-2 right-2 sm:left-3 sm:right-3 z-50 bg-race-purple text-black font-black text-xs p-2.5 sm:p-3 rounded-2xl shadow-[0_0_25px_rgba(217,70,239,0.9)] border-2 border-white animate-bounce flex items-center justify-between">
-              <span>{toastNotification}</span>
-              <button onClick={() => setToastNotification(null)} className="text-black font-extrabold ml-2">✕</button>
-            </div>
-          )}
-
           <Header
             selectedCircuit={selectedCircuit}
             onSelectCircuit={setSelectedCircuit}
