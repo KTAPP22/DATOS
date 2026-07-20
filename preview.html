@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full bg-black select-none">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Apex Karting Real Telemetry - Mobile & Desktop</title>
+  
+  <!-- React & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  
+  <!-- Babel for JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            oled: '#000000',
+            'race-purple': '#D946EF',
+            'race-purple-light': '#E879F9',
+            'race-red': '#FF3344',
+            'race-yellow': '#FFCC00'
+          },
+          fontFamily: {
+            mono: ['"JetBrains Mono"', '"Roboto Mono"', 'Consolas', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&family=JetBrains+Mono:wght@500;700;800;900&display=swap" rel="stylesheet">
+
+  <style>
+    html, body {
+      height: 100%;
+      height: 100dvh;
+      width: 100vw;
+      background-color: #000000 !important;
+      color: #ffffff;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .text-glow-purple { text-shadow: 0 0 15px rgba(217, 70, 239, 0.7), 0 0 30px rgba(217, 70, 239, 0.4); }
+    .text-glow-red { text-shadow: 0 0 15px rgba(255, 51, 68, 0.6); }
+    .border-glow-purple { box-shadow: 0 0 15px rgba(217, 70, 239, 0.4); }
+    .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: #000000; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #27272a; border-radius: 2px; }
+  </style>
+</head>
+<body class="h-full w-full bg-black text-white antialiased overflow-hidden">
+  <div id="root" class="h-full w-full"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const CIRCUITS_LIST = [
+      {
+        id: 'kartcenter-campillos',
+        name: '🏁 Kartcenter Campillos (Málaga)',
+        url: 'https://www.apex-timing.com/live-timing/kartcenter-campillos/',
+        trackLength: '1.580m'
+      },
+      {
+        id: 'ariza-racing',
+        name: '🏁 Karting Ariza Racing Circuit',
+        url: 'https://www.apex-timing.com/live-timing/ariza-racing-circuit/',
+        trackLength: '1.240m'
+      },
+      {
+        id: 'lucas-guerrero',
+        name: '🏁 Kartodromo Lucas Guerrero',
+        url: 'https://www.apex-timing.com/live-timing/lucas-guerrero/',
+        trackLength: '1.428m'
+      }
+    ];
+
+    function parseTimeToMs(timeStr) {
+      if (!timeStr || timeStr === '--.---' || timeStr === '') return 0;
+      const clean = timeStr.replace(/[^0-9:.]/g, '').trim();
+      const parts = clean.split(':');
+      if (parts.length === 2) {
+        return Math.round((parseFloat(parts[0]) * 60 + parseFloat(parts[1])) * 1000);
+      }
+      return Math.round(parseFloat(parts[0]) * 1000);
+    }
+
+    function formatLapTime(ms) {
+      if (!ms || isNaN(ms) || ms === 0) return "--.---";
+      const totalSeconds = ms / 1000;
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = (totalSeconds % 60).toFixed(3);
+      if (minutes > 0) {
+        const padSec = (totalSeconds % 60 < 10 ? '0' : '') + seconds;
+        return `${minutes}:${padSec}`;
+      }
+      return seconds;
+    }
+
+    function formatDelta(deltaSeconds) {
+      if (deltaSeconds === null || deltaSeconds === undefined || isNaN(deltaSeconds)) return " 0.000";
+      const sign = deltaSeconds > 0 ? "+" : "";
+      return `${sign}${deltaSeconds.toFixed(3)}`;
+    }
+
+    // PERSISTENT ENGINE WITH MOBILE & DESKTOP TELEMETRY DATA PROTECTION
+    class PersistentApexEngine {
+      constructor(circuit, onUpdate, onAutoSavedNotification) {
+        this.circuit = circuit;
+        this.onUpdate = onUpdate;
+        this.onAutoSavedNotification = onAutoSavedNotification;
+        
+        this.pollInterval = null;
+        this.wsSocket = null;
+        this.isRecording = true;
+        
+        this.kartRegistry = new Map();
+        this.hasActiveSessionStarted = false;
+        this.lastGridCount = 0;
+
+        this.handleBeforeUnload = this.handleBeforeUnload.bind(this);
+        this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
+
+        this.loadCircuitStorage();
+      }
+
+      loadCircuitStorage() {
+        try {
+          const keyKarts = `apex_karts_db_${this.circuit.id}`;
+          const savedKarts = localStorage.getItem(keyKarts);
+          if (savedKarts) {
+            const parsed = JSON.parse(savedKarts);
+            Object.keys(parsed).forEach(kart => {
+              this.kartRegistry.set(kart, {
+                kartNumber: kart,
+                drivers: new Set(parsed[kart].drivers || []),
+                lapsMs: parsed[kart].lapsMs || [],
+                bestLapMs: parsed[kart].bestLapMs || 0
+              });
+            });
+          }
+        } catch(e) {}
+      }
+
+      start() {
+        console.log('[Mobile & Desktop Engine] Active for:', this.circuit.name);
+        
+        window.addEventListener('beforeunload', this.handleBeforeUnload);
+        window.addEventListener('pagehide', this.handleBeforeUnload);
+        document.addEventListener('visibilitychange', this.handleVisibilityChange);
+
+        this.broadcastState(`💾 DATOS RECUPERADOS (${this.circuit.name})`);
+
+        this.connectWebSocket();
+        this.pollApexLiveStream();
+        this.pollInterval = setInterval(() => this.pollApexLiveStream(), 3000);
+      }
+
+      stop() {
+        this.saveToLocalStorage();
+        window.removeEventListener('beforeunload', this.handleBeforeUnload);
+        window.removeEventListener('pagehide', this.handleBeforeUnload);
+        document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+
+        if (this.wsSocket) this.wsSocket.close();
+        if (this.pollInterval) clearInterval(this.pollInterval);
+      }
+
+      handleBeforeUnload() {
+        this.saveToLocalStorage();
+      }
+
+      handleVisibilityChange() {
+        if (document.visibilityState === 'hidden') {
+          this.saveToLocalStorage();
+        }
+      }
+
+      setRecordingMode(enabled) {
+        this.isRecording = enabled;
+        const statusMsg = this.isRecording ? '🔴 AUTOGUARDADO ACTIVADO' : '⏸️ CAPTURA EN PAUSA';
+        this.broadcastState(statusMsg);
+      }
+
+      saveToLocalStorage() {
+        try {
+          const keyKarts = `apex_karts_db_${this.circuit.id}`;
+          const obj = {};
+          this.kartRegistry.forEach((val, key) => {
+            obj[key] = {
+              kartNumber: val.kartNumber,
+              drivers: Array.from(val.drivers),
+              lapsMs: val.lapsMs,
+              bestLapMs: val.bestLapMs
+            };
+          });
+          localStorage.setItem(keyKarts, JSON.stringify(obj));
+        } catch(e) {}
+      }
+
+      connectWebSocket() {
+        try {
+          this.wsSocket = new WebSocket('wss://live.apex-timing.com/ws?room=kartcenter-campillos');
+          this.wsSocket.onmessage = (event) => {
+            if (!this.isRecording) return;
+            try {
+              const packet = JSON.parse(event.data);
+              if (packet && packet.grid && Array.isArray(packet.grid)) {
+                this.processRealGridPayload(packet.grid);
+              }
+              if (packet && (packet.flag === 'CHEQUERED' || packet.sessionFinished)) {
+                this.autoSaveSession('BANDERA A CUADROS');
+              }
+            } catch(err) {}
+          };
+        } catch(e) {}
+      }
+
+      async pollApexLiveStream() {
+        if (!this.isRecording) {
+          this.broadcastState('⏸️ CAPTURA EN PAUSA');
+          return;
+        }
+
+        try {
+          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(this.circuit.url)}`;
+          const response = await fetch(proxyUrl);
+          if (!response.ok) throw new Error('Fetch failed');
+          const htmlStr = await response.text();
+
+          const parsedGrid = this.extractRealDriversFromApexHTML(htmlStr);
+          
+          if (parsedGrid && parsedGrid.length > 0) {
+            this.hasActiveSessionStarted = true;
+            this.lastGridCount = parsedGrid.length;
+            this.processRealGridPayload(parsedGrid);
+          } else {
+            if (this.hasActiveSessionStarted && this.lastGridCount > 0) {
+              this.autoSaveSession('FIN DE TANDA EN APEX');
+            } else {
+              this.broadcastState(`🟢 EN ESPERA DE KARTS EN ${this.circuit.name}`);
+            }
+          }
+        } catch(err) {
+          this.broadcastState(`🔴 DATOS PROTEGIDOS EN MEMORIA`);
+        }
+      }
+
+      extractRealDriversFromApexHTML(html) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const rows = doc.querySelectorAll('#tgrid tr, table.dyna tr, .grid_row, tr[data-id]');
+        const extracted = [];
+
+        rows.forEach((row, idx) => {
+          const cells = row.querySelectorAll('td, div');
+          if (cells.length >= 3) {
+            const kartText = row.querySelector('.kart, .kart_number, td:nth-child(2)')?.textContent?.trim();
+            const driverText = row.querySelector('.driver, .driver_name, td:nth-child(3)')?.textContent?.trim();
+            const bestLapText = row.querySelector('.best, .best_lap, td:nth-child(4)')?.textContent?.trim();
+            const lastLapText = row.querySelector('.last, .last_lap, td:nth-child(5)')?.textContent?.trim();
+
+            if (kartText && kartText !== '' && !isNaN(parseInt(kartText))) {
+              extracted.push({
+                kart: kartText,
+                driver: driverText || '',
+                best: bestLapText || '',
+                last: lastLapText || bestLapText || ''
+              });
+            }
+          }
+        });
+
+        return extracted;
+      }
+
+      processRealGridPayload(gridData) {
+        if (!this.isRecording || !gridData || gridData.length === 0) return;
+
+        gridData.forEach(row => {
+          const kartNum = String(row.kart || row.kartNumber || row.number || '').trim();
+          const driverName = String(row.driver || row.name || row.driver_name || '').trim();
+          const bestLapStr = String(row.best || row.bestLap || row.best_lap || '');
+          const lastLapStr = String(row.last || row.lastLap || row.last_lap || '');
+          
+          const bestMs = parseTimeToMs(bestLapStr);
+          const lastMs = parseTimeToMs(lastLapStr) || bestMs;
+
+          if (kartNum && kartNum !== '0' && kartNum !== '') {
+            if (!this.kartRegistry.has(kartNum)) {
+              this.kartRegistry.set(kartNum, {
+                kartNumber: kartNum,
+                drivers: new Set(),
+                lapsMs: [],
+                bestLapMs: bestMs || 0
+              });
+            }
+
+            const kartEntry = this.kartRegistry.get(kartNum);
+
+            if (driverName && driverName !== '' && !driverName.includes('Piloto ')) {
+              kartEntry.drivers.add(driverName);
+            }
+
+            if (lastMs > 0) {
+              kartEntry.lapsMs.push(lastMs);
+              if (!kartEntry.bestLapMs || lastMs < kartEntry.bestLapMs) {
+                kartEntry.bestLapMs = lastMs;
+              }
+            }
+          }
+        });
+
+        this.saveToLocalStorage();
+        this.broadcastState('🔴 REGISTRANDO DATOS EN VIVO...');
+      }
+
+      autoSaveSession(reason = 'FIN DE SESIÓN DETECTADO') {
+        if (this.kartRegistry.size === 0) return;
+
+        const sessionSummary = this.calculateAverageClassification();
+        this.hasActiveSessionStarted = false;
+        this.lastGridCount = 0;
+
+        this.saveToLocalStorage();
+
+        if (this.onAutoSavedNotification) {
+          this.onAutoSavedNotification(sessionSummary);
+        }
+
+        this.broadcastState(`🏁 SESIÓN GUARDADA AUTOMÁTICAMENTE`);
+      }
+
+      calculateAverageClassification() {
+        const results = [];
+
+        this.kartRegistry.forEach((entry, kartNum) => {
+          const validLaps = entry.lapsMs.filter(l => l > 0);
+          const totalMs = validLaps.reduce((a, b) => a + b, 0);
+          const avgMs = validLaps.length > 0 ? Math.round(totalMs / validLaps.length) : entry.bestLapMs;
+
+          results.push({
+            kartNumber: kartNum,
+            drivers: Array.from(entry.drivers),
+            avgLapMs: avgMs || entry.bestLapMs || 0,
+            bestLapMs: entry.bestLapMs || 0,
+            totalLaps: validLaps.length
+          });
+        });
+
+        return results.sort((a, b) => a.avgLapMs - b.avgLapMs);
+      }
+
+      broadcastState(statusText) {
+        const results = this.calculateAverageClassification();
+        this.onUpdate({ 
+          classifiedKarts: results, 
+          isRecording: this.isRecording,
+          statusText 
+        });
+      }
+
+      resetCurrentCircuitData() {
+        const keyKarts = `apex_karts_db_${this.circuit.id}`;
+        this.kartRegistry.clear();
+        this.hasActiveSessionStarted = false;
+        this.lastGridCount = 0;
+
+        localStorage.removeItem(keyKarts);
+        this.broadcastState(`REINICIADOS DATOS DE: ${this.circuit.name}`);
+      }
+    }
+
+    // Responsive Mobile & Desktop Header
+    function Header({ selectedCircuit, onSelectCircuit, totalKarts, statusText, isRecording, onToggleRecording, onResetCircuit, onOpenLiveTiming, onOpenConfig }) {
+      return (
+        <header className="w-full bg-black border-b border-zinc-800 flex flex-col shrink-0 select-none font-mono">
+          {/* Top Control Bar (Fully Mobile Responsive Grid) */}
+          <div className="flex flex-wrap items-center justify-between gap-1.5 px-2.5 py-2 border-b border-zinc-900 text-xs">
+            {/* ON / OFF Recording Button */}
+            <button
+              onClick={onToggleRecording}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-black transition-all shadow-md active:scale-95 ${
+                isRecording 
+                  ? 'bg-race-purple text-black shadow-[0_0_12px_rgba(217,70,239,0.6)] animate-pulse' 
+                  : 'bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700'
+              }`}
+            >
+              <span>{isRecording ? '🔴 REC: ON' : '⏸️ REC: OFF'}</span>
+            </button>
+
+            {/* LIVE TIMING BUTTON */}
+            <button
+              onClick={onOpenLiveTiming}
+              className="bg-race-purple text-black font-mono font-black text-[11px] sm:text-xs px-3 py-1.5 rounded-xl hover:bg-emerald-400 transition-all active:scale-95 shadow-[0_0_12px_rgba(217,70,239,0.6)] flex items-center gap-1"
+            >
+              <span>⏱️ TIMING</span>
+            </button>
+
+            {/* RESET ONLY FOR THIS CIRCUIT & CONFIG */}
+            <div className="flex items-center gap-1">
+              <button
+                onClick={onResetCircuit}
+                title={`Borrar datos guardados solo de ${selectedCircuit.name}`}
+                className="bg-red-950/80 border border-race-red text-race-red font-mono text-[10px] sm:text-[11px] font-extrabold px-2 py-1 rounded-xl hover:bg-red-900 hover:text-white active:scale-95 transition-all"
+              >
+                🗑️ REINICIAR
+              </button>
+
+              <button
+                onClick={onOpenConfig}
+                className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-[11px] font-bold px-2 py-1 rounded-xl hover:text-white active:scale-95"
+              >
+                ⚙️
+              </button>
+            </div>
+          </div>
+
+          {/* Circuit Selector Dropdown (Mobile Responsive) */}
+          <div className="px-2.5 py-1.5 bg-zinc-950 border-b border-zinc-900 flex flex-col gap-1">
+            <div className="flex items-center justify-between text-[10px] font-bold text-zinc-400">
+              <span className="truncate">CIRCUITO ACTIVO:</span>
+              <span className="text-race-purple font-bold shrink-0">LONGITUD: {selectedCircuit.trackLength}</span>
+            </div>
+            
+            <select
+              value={selectedCircuit.id}
+              onChange={(e) => {
+                const found = CIRCUITS_LIST.find(c => c.id === e.target.value);
+                if (found) onSelectCircuit(found);
+              }}
+              className="w-full bg-black border-2 border-race-purple text-race-purple font-black text-xs rounded-xl px-2.5 py-2 focus:outline-none shadow-[0_0_10px_rgba(217,70,239,0.3)] cursor-pointer"
+            >
+              {CIRCUITS_LIST.map(circuit => (
+                <option key={circuit.id} value={circuit.id} className="bg-black text-white">
+                  {circuit.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Title Bar */}
+          <div className="px-2.5 py-1.5 bg-black flex items-center justify-between">
+            <h1 className="text-sm sm:text-base font-black text-white flex items-center gap-1">
+              <span>🏆</span>
+              <span className="text-race-purple text-glow-purple truncate">CLASIFICACIÓN POR MEDIA DE KART</span>
+            </h1>
+            <span className="text-[10px] sm:text-[11px] font-bold text-zinc-400 shrink-0">
+              KARTS: <strong className="text-race-purple">{totalKarts}</strong>
+            </span>
+          </div>
+        </header>
+      );
+    }
+
+    // Main Kart Classifier Component (Mobile & Desktop Responsive)
+    function KartClassifier({ classifiedKarts, selectedCircuit, isRecording }) {
+      const [selectedKart, setSelectedKart] = useState(null);
+
+      const bestOverallAvgMs = classifiedKarts.length > 0 ? classifiedKarts[0].avgLapMs : 0;
+
+      return (
+        <div className="flex-1 flex flex-col bg-black p-2.5 sm:p-3 space-y-2.5 sm:space-y-3 overflow-y-auto custom-scrollbar select-none font-mono">
+          {/* Status Banner */}
+          <div className="bg-gradient-to-r from-zinc-950 via-purple-950/40 to-zinc-950 border-2 border-race-purple rounded-2xl p-2.5 sm:p-3 shadow-[0_0_20px_rgba(217,70,239,0.3)] shrink-0 flex items-center justify-between">
+            <div className="min-w-0 pr-2">
+              <span className="text-[9px] sm:text-[10px] text-race-purple font-extrabold uppercase tracking-wider flex items-center gap-1 truncate">
+                <span>🛡️ DATOS PROTEGIDOS (MÓVIL & PC)</span>
+              </span>
+              <h2 className="text-[11px] sm:text-xs font-black text-white truncate">
+                CLASIFICACIÓN POR MEDIA ({selectedCircuit.name.split(' ')[1] || 'CAMPILLOS'})
+              </h2>
+            </div>
+
+            <div className="px-2.5 py-1 rounded-xl bg-purple-950 border border-race-purple text-race-purple font-extrabold text-[9px] sm:text-[10px] shrink-0">
+              {isRecording ? '🔴 VIVO' : '⏸️ PAUSA'}
+            </div>
+          </div>
+
+          {classifiedKarts.length === 0 ? (
+            <div className="flex-1 border-2 border-dashed border-zinc-800 rounded-2xl p-4 sm:p-6 flex flex-col items-center justify-center text-center">
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full border-4 border-race-purple border-t-transparent animate-spin mb-3"></div>
+              <h3 className="text-xs sm:text-sm font-bold text-white uppercase">
+                {isRecording ? 'CONEXIÓN MÓVIL Y AUTOGUARDADO ACTIVOS' : 'DETECTOR EN PAUSA'}
+              </h3>
+              <p className="text-[11px] sm:text-xs text-zinc-400 mt-2 max-w-xs leading-relaxed">
+                Al terminar la tanda en <strong className="text-race-purple">{selectedCircuit.name}</strong>, el sistema calculará la media de cada kart y guardará los pilotos automáticamente.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2 sm:space-y-2.5">
+              {classifiedKarts.map((kart, idx) => {
+                const isBestAvg = idx === 0;
+                const isWorstAvg = idx === classifiedKarts.length - 1 && classifiedKarts.length > 1;
+                const isExpanded = selectedKart === kart.kartNumber;
+                const deltaVsBestAvg = bestOverallAvgMs > 0 ? (kart.avgLapMs - bestOverallAvgMs) / 1000 : 0;
+
+                return (
+                  <div
+                    key={kart.kartNumber}
+                    className={`bg-zinc-950 border-2 rounded-2xl p-2.5 sm:p-3.5 transition-all ${
+                      isBestAvg 
+                        ? 'border-race-purple shadow-[0_0_25px_rgba(217,70,239,0.4)]' 
+                        : isWorstAvg
+                        ? 'border-red-950/80 shadow-[0_0_15px_rgba(255,51,68,0.2)]'
+                        : 'border-zinc-800 hover:border-zinc-700'
+                    }`}
+                  >
+                    {/* Top Line (Rank, Kart Number, Lap Time) */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 sm:gap-3 min-w-0 pr-2">
+                        {/* Position Badge */}
+                        <div className={`flex items-center justify-center font-mono font-black text-sm sm:text-base w-8 h-8 sm:w-9 sm:h-9 rounded-xl shrink-0 ${
+                          isBestAvg ? 'bg-race-purple text-black shadow-[0_0_12px_rgba(217,70,239,0.6)]' :
+                          idx === 1 ? 'bg-purple-900 text-white' :
+                          idx === 2 ? 'bg-zinc-800 text-purple-300' : 'bg-black text-zinc-500 border border-zinc-800'
+                        }`}>
+                          #{idx + 1}
+                        </div>
+
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-white font-black text-base sm:text-lg">
+                              KART #{kart.kartNumber}
+                            </span>
+                            <span className={`text-[9px] sm:text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                              isBestAvg ? 'bg-purple-950/80 border-race-purple text-race-purple text-glow-purple' :
+                              'bg-zinc-900 border-zinc-700 text-zinc-300'
+                            }`}>
+                              {isBestAvg ? '🚀 MEJOR MEDIA' : isWorstAvg ? '🐌 PEOR MEDIA' : `POS #${idx + 1}`}
+                            </span>
+                          </div>
+                          <div className="text-[10px] sm:text-[11px] text-zinc-400 mt-0.5 truncate">
+                            👤 PILOTOS: <strong className="text-race-purple font-extrabold">{kart.drivers.length > 0 ? kart.drivers.join(', ') : 'Registrando en vivo...'}</strong>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Average Lap Time */}
+                      <div className="text-right shrink-0">
+                        <div className="text-[8px] sm:text-[9px] text-zinc-500 font-bold uppercase">MEDIA VUELTA</div>
+                        <div className={`text-lg sm:text-xl font-black ${
+                          isBestAvg ? 'text-race-purple text-glow-purple' : 'text-white'
+                        }`}>
+                          {formatLapTime(kart.avgLapMs)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Metrics Bar */}
+                    <div className="grid grid-cols-3 gap-1.5 mt-2.5 pt-2 border-t border-zinc-900 text-center">
+                      <div className="bg-black border border-zinc-900 rounded-xl p-1.5">
+                        <span className="text-[8px] sm:text-[9px] text-zinc-500 font-bold block uppercase">MEDIA</span>
+                        <span className="text-xs sm:text-sm font-black text-race-purple text-glow-purple">
+                          {formatLapTime(kart.avgLapMs)}
+                        </span>
+                      </div>
+
+                      <div className="bg-black border border-zinc-900 rounded-xl p-1.5">
+                        <span className="text-[8px] sm:text-[9px] text-zinc-500 font-bold block uppercase">MEJOR</span>
+                        <span className="text-xs sm:text-sm font-bold text-zinc-200">
+                          {formatLapTime(kart.bestLapMs)}
+                        </span>
+                      </div>
+
+                      <div className="bg-black border border-zinc-900 rounded-xl p-1.5">
+                        <span className="text-[8px] sm:text-[9px] text-zinc-500 font-bold block uppercase">GAP VS #1</span>
+                        <span className={`text-xs sm:text-sm font-black ${deltaVsBestAvg === 0 ? 'text-race-purple' : 'text-race-red'}`}>
+                          {deltaVsBestAvg === 0 ? 'TOP' : `${formatDelta(deltaVsBestAvg)}s`}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Toggle Details Button */}
+                    <button
+                      onClick={() => setSelectedKart(isExpanded ? null : kart.kartNumber)}
+                      className="w-full mt-2 pt-1 text-center text-[9px] sm:text-[10px] text-zinc-500 hover:text-race-purple transition-colors border-t border-zinc-900/60 font-bold py-1 active:scale-98"
+                    >
+                      {isExpanded ? '▲ OCULTAR DETALLES' : '▼ VER PILOTOS QUE LO HAN LLEVADO'}
+                    </button>
+
+                    {isExpanded && (
+                      <div className="mt-2 p-2 sm:p-2.5 bg-black border border-zinc-900 rounded-xl text-xs space-y-1.5">
+                        <div className="text-race-purple text-[9px] sm:text-[10px] font-bold uppercase">
+                          👥 PILOTOS REGISTRADOS EN EL KART #{kart.kartNumber}:
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {kart.drivers.length > 0 ? (
+                            kart.drivers.map((dName, dIdx) => (
+                              <span key={dIdx} className="bg-purple-950/60 border border-race-purple/40 text-race-purple px-2 py-0.5 rounded-md text-[9px] sm:text-[10px] font-bold">
+                                👤 {dName}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-zinc-500 text-[10px]">Sin pilotos registrados</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // LIVE TIMING MODAL COMPONENT (Mobile Optimized)
+    function LiveTimingModal({ isOpen, onClose, selectedCircuit }) {
+      if (!isOpen) return null;
+
+      return (
+        <div className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex flex-col font-mono select-none">
+          <div className="flex items-center justify-between p-2.5 sm:p-3 bg-zinc-950 border-b border-zinc-800 shrink-0">
+            <div className="flex items-center gap-1.5 min-w-0 pr-2">
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-race-purple opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-race-purple"></span>
+              </span>
+              <h2 className="text-xs sm:text-sm font-black text-white uppercase truncate">
+                ⏱️ TIMING EN DIRECTO
+              </h2>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <a
+                href={selectedCircuit.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[10px] sm:text-xs bg-zinc-900 border border-zinc-800 text-race-purple px-2 py-1 rounded-xl font-bold hover:text-white"
+              >
+                ABRIR ↗
+              </a>
+
+              <button
+                onClick={onClose}
+                className="bg-race-purple text-black font-black text-[11px] sm:text-xs px-2.5 py-1 rounded-xl hover:bg-emerald-400 active:scale-95 transition-all"
+              >
+                ✕ CERRAR
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 w-full h-full bg-black relative overflow-hidden">
+            <iframe
+              src={selectedCircuit.url}
+              title={`Apex Live Timing - ${selectedCircuit.name}`}
+              className="w-full h-full border-0 bg-black"
+              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+            />
+          </div>
+        </div>
+      );
+    }
+
+    // Settings Modal
+    function SettingsModal({ isOpen, onClose, selectedCircuit }) {
+      if (!isOpen) return null;
+      return (
+        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-3 font-mono">
+          <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-md p-4 space-y-4">
+            <div className="flex items-center justify-between border-b border-zinc-900 pb-2">
+              <h3 className="text-sm font-bold text-race-purple">⚙️ ADAPTADO PARA MÓVIL Y ORDENADOR</h3>
+              <button onClick={onClose} className="text-zinc-400 hover:text-white font-bold text-sm">✕</button>
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <label className="text-zinc-400 font-bold text-[10px] uppercase">URL CIRCUITO ACTIVO</label>
+              <input
+                type="text"
+                readOnly
+                value={selectedCircuit.url}
+                className="w-full bg-black border border-zinc-800 rounded-xl px-3 py-2 text-race-purple font-bold text-[11px]"
+              />
+
+              <div className="bg-black p-3 border border-zinc-800 rounded-xl mt-3 space-y-1">
+                <span className="text-xs text-race-purple font-bold block">📱 VISTA 100% RESPONSIVE EN MÓVIL</span>
+                <p className="text-[10px] text-zinc-400 leading-relaxed">
+                  Mantiene exactamente la misma estructura y datos del ordenador, optimizando los botones y tarjetas para pantallas de smartphones sin distorsionar la vista.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={onClose}
+              className="w-full bg-race-purple text-black font-black py-2 rounded-xl text-xs"
+            >
+              CERRAR
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // Main App Root
+    function App() {
+      const [selectedCircuit, setSelectedCircuit] = useState(CIRCUITS_LIST[0]);
+      const [classifiedKarts, setClassifiedKarts] = useState([]);
+      const [isRecording, setIsRecording] = useState(true);
+      const [statusText, setStatusText] = useState('CONECTANDO A APEX REAL...');
+      const [toastNotification, setToastNotification] = useState(null);
+      const [isLiveTimingOpen, setIsLiveTimingOpen] = useState(false);
+      const [isConfigOpen, setIsConfigOpen] = useState(false);
+
+      const engineRef = useRef(null);
+
+      useEffect(() => {
+        engineRef.current = new PersistentApexEngine(
+          selectedCircuit,
+          (data) => {
+            setClassifiedKarts(data.classifiedKarts);
+            if (data.isRecording !== undefined) setIsRecording(data.isRecording);
+            setStatusText(data.statusText);
+          },
+          (summary) => {
+            const msg = `🏁 ¡SESIÓN GUARDADA AUTOMÁTICAMENTE!\nSe han clasificado ${summary.length} karts por su media.`;
+            setToastNotification(msg);
+            setTimeout(() => setToastNotification(null), 5000);
+          }
+        );
+
+        engineRef.current.start();
+
+        return () => {
+          if (engineRef.current) engineRef.current.stop();
+        };
+      }, [selectedCircuit]);
+
+      const handleToggleRecording = () => {
+        const nextState = !isRecording;
+        setIsRecording(nextState);
+        if (engineRef.current) {
+          engineRef.current.setRecordingMode(nextState);
+        }
+      };
+
+      const handleResetCircuit = () => {
+        if (window.confirm(`¿Estás seguro de REINICIAR los datos guardados ÚNICAMENTE de ${selectedCircuit.name}?`)) {
+          if (engineRef.current) {
+            engineRef.current.resetCurrentCircuitData();
+          }
+        }
+      };
+
+      return (
+        <div className="h-full w-full bg-black text-white flex flex-col overflow-hidden relative font-mono">
+          {toastNotification && (
+            <div className="absolute top-12 left-2 right-2 sm:left-3 sm:right-3 z-50 bg-race-purple text-black font-black text-xs p-2.5 sm:p-3 rounded-2xl shadow-[0_0_25px_rgba(217,70,239,0.9)] border-2 border-white animate-bounce flex items-center justify-between">
+              <span>{toastNotification}</span>
+              <button onClick={() => setToastNotification(null)} className="text-black font-extrabold ml-2">✕</button>
+            </div>
+          )}
+
+          <Header
+            selectedCircuit={selectedCircuit}
+            onSelectCircuit={setSelectedCircuit}
+            totalKarts={classifiedKarts.length}
+            statusText={statusText}
+            isRecording={isRecording}
+            onToggleRecording={handleToggleRecording}
+            onResetCircuit={handleResetCircuit}
+            onOpenLiveTiming={() => setIsLiveTimingOpen(true)}
+            onOpenConfig={() => setIsConfigOpen(true)}
+          />
+
+          <main className="flex-1 flex flex-col min-h-0 bg-black overflow-hidden relative">
+            <KartClassifier
+              classifiedKarts={classifiedKarts}
+              selectedCircuit={selectedCircuit}
+              isRecording={isRecording}
+            />
+          </main>
+
+          <LiveTimingModal
+            isOpen={isLiveTimingOpen}
+            onClose={() => setIsLiveTimingOpen(false)}
+            selectedCircuit={selectedCircuit}
+          />
+
+          <SettingsModal
+            isOpen={isConfigOpen}
+            onClose={() => setIsConfigOpen(false)}
+            selectedCircuit={selectedCircuit}
+          />
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
