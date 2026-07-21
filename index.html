@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <title>Apex Karting Real Telemetry - Dual Registry Engine</title>
+  <title>Apex Karting Real Telemetry - Column Mapper Engine</title>
   
   <!-- React & ReactDOM -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -97,6 +97,7 @@
       return Math.round(parseFloat(parts[0]) * 1000);
     }
 
+    // Lap time formatter
     function formatLapTime(ms) {
       if (!ms || isNaN(ms) || ms === 0) return "--.---";
       const totalSeconds = ms / 1000;
@@ -109,6 +110,7 @@
       return seconds;
     }
 
+    // Gap formatter
     function formatDelta(deltaSeconds) {
       if (deltaSeconds === null || deltaSeconds === undefined || isNaN(deltaSeconds)) return " 0.000";
       const sign = deltaSeconds > 0 ? "+" : "";
@@ -207,7 +209,7 @@
       }
     }
 
-    // HIGH PRECISION REAL APEX TIMING CLIENT (DYNAMIC HOST + SEQUENCE POLICING + DUAL REGISTRY)
+    // HIGH PRECISION REAL APEX TIMING CLIENT (DYNAMIC COLUMN MAPPING + SEQUENCE POLICING + DUAL REGISTRY)
     class RealApexTimingClient {
       constructor(circuit, onUpdate, onSessionFinishedAlert) {
         this.circuit = circuit;
@@ -219,16 +221,24 @@
         
         this.configHost = 'live-data.apex-timing.com'; 
         
-        // Sequence tracking for HTTP polling
+        // Dynamic column mapping (maps 'no', 'dr', 'llp', 'blp' to layout cells like 'c4', 'c5', etc.)
+        this.columnMap = {
+          no: 'c4',
+          dr: 'c5',
+          llp: 'c9',
+          blp: 'c10'
+        };
+        
+        // HTTP polling sequence indexes
         this.pollInit = 0;
         this.pollIndex = 0;
         
         const savedRecState = localStorage.getItem('apex_rec_active');
         this.isRecording = savedRecState === 'true'; 
         
-        // DUAL LAYER REGISTRY
-        this.globalKarts = new Map(); // Mapped by physical Kart Number (Persists all day)
-        this.sessionRows = new Map(); // Mapped by temporary grid Row ID (Refreshed on new session/init)
+        // Dual Registry Layers
+        this.globalKarts = new Map(); 
+        this.sessionRows = new Map(); 
         
         this.pollCounter = 0;
         this.randomSessionId = Math.floor(Math.random() * 1000000000) || 1;
@@ -237,12 +247,11 @@
         this.lastLapTimestamp = Date.now();
         this.inactivityCheckInterval = null;
 
-        // Background Audio Loop
+        // Background Audio Keep-alive loop
         this.bgAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
         this.bgAudio.loop = true;
         this.wakeLock = null;
 
-        // Auto-bound handlers
         this.handleBeforeUnload = this.handleBeforeUnload.bind(this);
         this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
 
@@ -268,7 +277,7 @@
       }
 
       async start() {
-        console.log('[Apex Client] Listening for:', this.circuit.name);
+        console.log('[Apex Client] Starting connection for:', this.circuit.name);
         
         window.addEventListener('beforeunload', this.handleBeforeUnload);
         window.addEventListener('pagehide', this.handleBeforeUnload);
@@ -527,7 +536,7 @@
 
             if (cellId === 'init' || cellId === 'grid') {
               this.sessionRows.clear();
-              console.log('[Apex Client] New Session detected. Cleared row mapping assignments.');
+              console.log('[Apex Client] New Session / Init packet detected. Resetting active rows.');
             }
 
             if (cellId === 'dyn1' || cellId === 'track') {
@@ -554,10 +563,26 @@
                 const tempDiv = document.createElement('div');
                 tempDiv.innerHTML = parts.slice(2).join('|');
                 
+                const headRow = tempDiv.querySelector('tr[data-id="r0"]') || tempDiv.querySelector('tr.head');
+                if (headRow) {
+                  const headerCells = headRow.querySelectorAll('td');
+                  headerCells.forEach(cell => {
+                    const colId = cell.getAttribute('data-id'); 
+                    const colType = cell.getAttribute('data-type'); 
+                    if (colId && colType) {
+                      if (colType === 'no') this.columnMap.no = colId;
+                      if (colType === 'dr') this.columnMap.dr = colId;
+                      if (colType === 'llp') this.columnMap.llp = colId;
+                      if (colType === 'blp') this.columnMap.blp = colId;
+                    }
+                  });
+                  console.log('[Apex Client] Column mappings dynamically detected:', this.columnMap);
+                }
+
                 const rows = tempDiv.querySelectorAll('tr');
                 rows.forEach(row => {
                   const rId = row.getAttribute('data-id');
-                  if (rId && rId.startsWith('r')) {
+                  if (rId && rId.startsWith('r') && rId !== 'r0') {
                     if (!this.sessionRows.has(rId)) {
                       this.sessionRows.set(rId, {
                         kartNumber: '',
@@ -569,22 +594,25 @@
                     }
                     const entry = this.sessionRows.get(rId);
                     
-                    const cells = row.querySelectorAll('td');
-                    cells.forEach(cell => {
-                      const cId = cell.getAttribute('data-id');
-                      if (cId) {
-                        const val = cell.textContent.trim();
-                        if (cId.endsWith('no')) {
-                          entry.kartNumber = val;
-                        } else if (cId.endsWith('dr')) {
-                          const driverName = val.replace(/&nbsp;/g, ' ').trim();
-                          if (driverName && !driverName.includes('Piloto') && driverName !== '') {
-                            entry.drivers.add(driverName);
-                          }
-                        } else if (cId.endsWith('blp')) {
-                          const bestMs = parseTimeToMs(val);
-                          if (bestMs > 0) entry.bestLapMs = bestMs;
+                    const elementsWithId = row.querySelectorAll('[data-id]');
+                    elementsWithId.forEach(el => {
+                      const cId = el.getAttribute('data-id'); 
+                      const colPart = cId.replace(/^r\d+/, ''); 
+                      const val = el.textContent.trim();
+                      
+                      if (colPart === this.columnMap.no) {
+                        entry.kartNumber = val;
+                      } else if (colPart === this.columnMap.dr) {
+                        const driverName = val.replace(/&nbsp;/g, ' ').trim();
+                        if (driverName && !driverName.includes('Piloto') && driverName !== '') {
+                          entry.drivers.add(driverName);
                         }
+                      } else if (colPart === this.columnMap.blp) {
+                        const bestMs = parseTimeToMs(val);
+                        if (bestMs > 0) entry.bestLapMs = bestMs;
+                      } else if (colPart === this.columnMap.llp) {
+                        const lastMs = parseTimeToMs(val);
+                        if (lastMs > 0) entry.lapsMs.push(lastMs);
                       }
                     });
                     this.mergeRowToGlobal(rId);
@@ -598,7 +626,7 @@
               const match = cellId.match(/^(r\d+)(.*)$/);
               if (match) {
                 const rowId = match[1];
-                const suffix = match[2];
+                const suffix = match[2]; 
 
                 if (!this.sessionRows.has(rowId)) {
                   this.sessionRows.set(rowId, {
@@ -613,19 +641,19 @@
                 const entry = this.sessionRows.get(rowId);
                 hasUpdates = true;
 
-                if (suffix === 'dr') {
+                if (suffix === this.columnMap.dr) {
                   const driverName = value.replace(/&nbsp;/g, ' ').trim();
                   if (driverName && !driverName.includes('Piloto') && driverName !== '') {
                     entry.drivers.add(driverName);
                   }
-                } else if (suffix === 'no') {
+                } else if (suffix === this.columnMap.no) {
                   entry.kartNumber = value.trim();
-                } else if (suffix === 'blp') {
+                } else if (suffix === this.columnMap.blp) {
                   const bestMs = parseTimeToMs(value);
                   if (bestMs > 0) {
                     entry.bestLapMs = bestMs;
                   }
-                } else if (suffix === 'llp') {
+                } else if (suffix === this.columnMap.llp) {
                   const lastMs = parseTimeToMs(value);
                   if (lastMs > 0) {
                     entry.lapsMs.push(lastMs);
