@@ -74,6 +74,7 @@
       {
         id: 'kartcenter-campillos',
         name: '🏁 Kartcenter Campillos (Málaga)',
+        shortName: 'CAMPILLOS',
         url: 'https://www.apex-timing.com/live-timing/kartcenter-campillos/',
         trackLength: '1.580m',
         configPort: 9370
@@ -81,6 +82,7 @@
       {
         id: 'kartodromo-lucas-guerrero',
         name: '🏁 Kartódromo Lucas Guerrero (Valencia)',
+        shortName: 'LUCAS GUERRERO',
         url: 'https://live.apex-timing.com/kartodromo-lucas-guerrero/',
         trackLength: '1.428m',
         configPort: 9950
@@ -822,7 +824,7 @@
                 <span>🛡️ DATOS DE TIMING REAL EN VIVO</span>
               </span>
               <h2 className="text-[11px] sm:text-xs font-black text-white truncate">
-                CLASIFICACIÓN POR MEDIA ({selectedCircuit.name.split(' ')[1] || 'CAMPILLOS'})
+                CLASIFICACIÓN POR MEDIA ({selectedCircuit.shortName})
               </h2>
             </div>
 
