@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <title>Apex Karting Real Telemetry - Corrección de Host</title>
+  <title>Apex Karting Real Telemetry - Dual Registry Engine</title>
   
   <!-- React & ReactDOM -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -55,6 +55,8 @@
       -webkit-tap-highlight-color: transparent;
     }
     .text-glow-purple { text-shadow: 0 0 15px rgba(217, 70, 239, 0.7), 0 0 30px rgba(217, 70, 239, 0.4); }
+    .text-glow-emerald { text-shadow: 0 0 15px rgba(16, 185, 129, 0.6); }
+    .text-glow-amber { text-shadow: 0 0 15px rgba(245, 158, 11, 0.6); }
     .text-glow-red { text-shadow: 0 0 15px rgba(255, 51, 68, 0.6); }
     .border-glow-purple { box-shadow: 0 0 15px rgba(217, 70, 239, 0.4); }
     .custom-scrollbar::-webkit-scrollbar { width: 4px; }
@@ -113,7 +115,99 @@
       return `${sign}${deltaSeconds.toFixed(3)}`;
     }
 
-    // HIGH PRECISION REAL APEX TIMING CLIENT (DYNAMIC HOST + WEBSOCKET + DYNAMIC HTTP FALLBACK)
+    function getKartPerformanceTier(idx, total) {
+      if (total <= 1) {
+        return {
+          emoji: '🚀',
+          label: 'MISIL',
+          colorClass: 'bg-purple-950/80 border-race-purple text-race-purple',
+          borderClass: 'border-race-purple shadow-[0_0_25px_rgba(217,70,239,0.45)]',
+          textGlowClass: 'text-race-purple text-glow-purple'
+        };
+      }
+      if (total === 2) {
+        if (idx === 0) {
+          return {
+            emoji: '🚀',
+            label: 'MISIL',
+            colorClass: 'bg-purple-950/80 border-race-purple text-race-purple',
+            borderClass: 'border-race-purple shadow-[0_0_25px_rgba(217,70,239,0.45)]',
+            textGlowClass: 'text-race-purple text-glow-purple'
+          };
+        }
+        return {
+          emoji: '🔴',
+          label: 'PEOR',
+          colorClass: 'bg-red-950/80 border-race-red text-race-red',
+          borderClass: 'border-red-950/80 shadow-[0_0_15px_rgba(255,51,68,0.2)]',
+          textGlowClass: 'text-race-red text-glow-red'
+        };
+      }
+      if (total === 3) {
+        if (idx === 0) {
+          return {
+            emoji: '🚀',
+            label: 'MISIL',
+            colorClass: 'bg-purple-950/80 border-race-purple text-race-purple',
+            borderClass: 'border-race-purple shadow-[0_0_25px_rgba(217,70,239,0.45)]',
+            textGlowClass: 'text-race-purple text-glow-purple'
+          };
+        }
+        if (idx === 1) {
+          return {
+            emoji: '🟢',
+            label: 'BUENO',
+            colorClass: 'bg-emerald-950/80 border-emerald-500 text-emerald-400',
+            borderClass: 'border-emerald-800 shadow-[0_0_15px_rgba(16,185,129,0.25)]',
+            textGlowClass: 'text-emerald-400 text-glow-emerald'
+          };
+        }
+        return {
+          emoji: '🔴',
+          label: 'PEOR',
+          colorClass: 'bg-red-950/80 border-race-red text-race-red',
+          borderClass: 'border-red-950/80 shadow-[0_0_15px_rgba(255,51,68,0.2)]',
+          textGlowClass: 'text-race-red text-glow-red'
+        };
+      }
+
+      const quarter = total / 4;
+      if (idx < quarter) {
+        return {
+          emoji: '🚀',
+          label: 'MISIL',
+          colorClass: 'bg-purple-950/80 border-race-purple text-race-purple',
+          borderClass: 'border-race-purple shadow-[0_0_25px_rgba(217,70,239,0.45)]',
+          textGlowClass: 'text-race-purple text-glow-purple'
+        };
+      } else if (idx < quarter * 2) {
+        return {
+          emoji: '🟢',
+          label: 'BUENO',
+          colorClass: 'bg-emerald-950/80 border-emerald-500 text-emerald-400',
+          borderClass: 'border-emerald-800 shadow-[0_0_15px_rgba(16,185,129,0.25)]',
+          textGlowClass: 'text-emerald-400 text-glow-emerald'
+        };
+      } else if (idx < quarter * 3) {
+        return {
+          emoji: '🟠',
+          label: 'MEDIO',
+          colorClass: 'bg-amber-950/80 border-amber-500 text-amber-400',
+          borderClass: 'border-amber-800 shadow-[0_0_15px_rgba(245,158,11,0.2)]',
+          textGlowClass: 'text-amber-400 text-glow-amber'
+        };
+      } else {
+        return {
+          emoji: '🔴',
+          label: 'PEOR',
+          colorClass: 'bg-red-950/80 border-race-red text-race-red',
+          borderClass: 'border-red-950/80 shadow-[0_0_15px_rgba(255,51,68,0.2)]',
+          textGlowClass: 'text-race-red text-glow-red'
+        };
+      }
+    }
+
+    // HIGH PRECISION REAL APEX TIMING CLIENT (DYNAMIC HOST + SEQUENCE POLICING + DUAL REGISTRY)
     class RealApexTimingClient {
       constructor(circuit, onUpdate, onSessionFinishedAlert) {
         this.circuit = circuit;
@@ -123,17 +217,19 @@
         this.wsSocket = null;
         this.pollInterval = null;
         
-        // DYNAMIC HOST DISCOVERY (Apex Timing has migrated to live-data.apex-timing.com)
         this.configHost = 'live-data.apex-timing.com'; 
         
-        // PERSISTED RECORDING STATE (Load from localStorage)
+        // Sequence tracking for HTTP polling
+        this.pollInit = 0;
+        this.pollIndex = 0;
+        
         const savedRecState = localStorage.getItem('apex_rec_active');
         this.isRecording = savedRecState === 'true'; 
         
-        // Active Kart Registry
-        this.kartRegistry = new Map();
+        // DUAL LAYER REGISTRY
+        this.globalKarts = new Map(); // Mapped by physical Kart Number (Persists all day)
+        this.sessionRows = new Map(); // Mapped by temporary grid Row ID (Refreshed on new session/init)
         
-        // Polling counter
         this.pollCounter = 0;
         this.randomSessionId = Math.floor(Math.random() * 1000000000) || 1;
 
@@ -160,7 +256,7 @@
           if (savedKarts) {
             const parsed = JSON.parse(savedKarts);
             Object.keys(parsed).forEach(kart => {
-              this.kartRegistry.set(kart, {
+              this.globalKarts.set(kart, {
                 kartNumber: parsed[kart].kartNumber || kart,
                 drivers: new Set(parsed[kart].drivers || []),
                 lapsMs: parsed[kart].lapsMs || [],
@@ -184,10 +280,8 @@
           
         this.broadcastState(initialStatus);
 
-        // 1. Discover the correct host from official config.js dynamically
         await this.discoverCorrectHost();
 
-        // 2. Start WebSocket & Polling pipelines with correct discovered host
         this.connectWebSocket();
         this.startHttpPollingFallback();
         this.startInactivityChecker();
@@ -198,9 +292,6 @@
         }
       }
 
-      /**
-       * Fetch official config.js of the circuit dynamically to discover their active telemetry host
-       */
       async discoverCorrectHost() {
         try {
           const configUrl = `https://www.apex-timing.com/live-timing/${this.circuit.id}/javascript/config.js`;
@@ -300,7 +391,7 @@
         try {
           const keyKarts = `apex_karts_db_${this.circuit.id}`;
           const obj = {};
-          this.kartRegistry.forEach((val, key) => {
+          this.globalKarts.forEach((val, key) => {
             obj[key] = {
               kartNumber: val.kartNumber,
               drivers: Array.from(val.drivers),
@@ -317,7 +408,6 @@
           if (this.wsSocket) this.wsSocket.close();
 
           const wsPort = this.circuit.configPort + 3;
-          // Connect to the dynamically discovered host
           const wsUrl = `wss://${this.configHost}:${wsPort}/`;
           
           console.log(`[WebSocket] Connecting to: ${wsUrl}`);
@@ -348,8 +438,8 @@
 
           try {
             const apiPort = this.circuit.configPort + 4;
-            // Poll using the discovered host to prevent CORS 503 errors
-            const targetUrl = `https://${this.configHost}/live-timing/commonv2/functions/live_ajax.php?version=1.0.0&init=0&index=0&port=${apiPort}&counter=${this.pollCounter}&duration=100&id=${this.randomSessionId}&ignored=0`;
+            // Query with sequence indexes this.pollInit and this.pollIndex
+            const targetUrl = `https://${this.configHost}/live-timing/commonv2/functions/live_ajax.php?version=1.0.0&init=${this.pollInit}&index=${this.pollIndex}&port=${apiPort}&counter=${this.pollCounter}&duration=100&id=${this.randomSessionId}&ignored=0`;
             const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
             
             const response = await fetch(proxyUrl);
@@ -360,8 +450,14 @@
             
             if (dataText && dataText !== 'error' && !dataText.includes('Service Unavailable')) {
               const parts = dataText.split('@');
-              const payload = parts.length >= 3 ? parts[2] : dataText;
-              this.processRawApexPayload(payload);
+              if (parts.length >= 3) {
+                // Update internal sequence indexes for next polling calls
+                this.pollInit = parseInt(parts[0], 10) || this.pollInit;
+                this.pollIndex = parseInt(parts[1], 10) || this.pollIndex;
+                
+                const payload = parts[2];
+                this.processRawApexPayload(payload);
+              }
             }
           } catch(err) {}
         }, 3000);
@@ -372,7 +468,7 @@
           if (!this.isRecording) return;
           
           let totalLapsRegistered = 0;
-          this.kartRegistry.forEach(k => totalLapsRegistered += k.lapsMs.length);
+          this.globalKarts.forEach(k => totalLapsRegistered += k.lapsMs.length);
 
           if (totalLapsRegistered > 2) {
             const idleTimeSeconds = (Date.now() - this.lastLapTimestamp) / 1000;
@@ -381,6 +477,46 @@
             }
           }
         }, 10000);
+      }
+
+      // Propagate and merge the active row updates into the persistent global kart database
+      mergeRowToGlobal(rowId) {
+        const row = this.sessionRows.get(rowId);
+        if (!row || !row.kartNumber || row.kartNumber === '' || row.kartNumber === '0') return;
+
+        const kartNum = row.kartNumber;
+        if (!this.globalKarts.has(kartNum)) {
+          this.globalKarts.set(kartNum, {
+            kartNumber: kartNum,
+            drivers: new Set(),
+            lapsMs: [],
+            bestLapMs: 0
+          });
+        }
+
+        const globalEntry = this.globalKarts.get(kartNum);
+
+        // Merge driver names
+        row.drivers.forEach(d => {
+          if (d) globalEntry.drivers.add(d);
+        });
+
+        // Merge laps avoiding duplicates (using row.mergedLapsCount helper index)
+        if (!row.mergedLapsCount) row.mergedLapsCount = 0;
+        while (row.mergedLapsCount < row.lapsMs.length) {
+          const newLap = row.lapsMs[row.mergedLapsCount];
+          if (newLap > 0) {
+            globalEntry.lapsMs.push(newLap);
+          }
+          row.mergedLapsCount += 1;
+        }
+
+        // Merge best overall lap time
+        if (row.bestLapMs > 0) {
+          if (!globalEntry.bestLapMs || row.bestLapMs < globalEntry.bestLapMs) {
+            globalEntry.bestLapMs = row.bestLapMs;
+          }
+        }
       }
 
       processRawApexPayload(dataStr) {
@@ -395,6 +531,13 @@
             const cellId = parts[0];
             const value = parts[2];
 
+            // Detect new session / initialization sequence (reset active rows mapping)
+            if (cellId === 'init' || cellId === 'grid') {
+              this.sessionRows.clear();
+              console.log('[Apex Client] New Session detected. Cleared row mapping assignments.');
+            }
+
+            // Detect session finished / checkered flag
             if (cellId === 'dyn1' || cellId === 'track') {
               const statusText = value.trim();
               if (statusText) {
@@ -414,22 +557,70 @@
               }
             }
 
+            // Grid Initial Load Parser
+            if (cellId === 'grid') {
+              try {
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = parts.slice(2).join('|');
+                
+                const rows = tempDiv.querySelectorAll('tr');
+                rows.forEach(row => {
+                  const rId = row.getAttribute('data-id');
+                  if (rId && rId.startsWith('r')) {
+                    if (!this.sessionRows.has(rId)) {
+                      this.sessionRows.set(rId, {
+                        kartNumber: '',
+                        drivers: new Set(),
+                        lapsMs: [],
+                        bestLapMs: 0,
+                        mergedLapsCount: 0
+                      });
+                    }
+                    const entry = this.sessionRows.get(rId);
+                    
+                    const cells = row.querySelectorAll('td');
+                    cells.forEach(cell => {
+                      const cId = cell.getAttribute('data-id');
+                      if (cId) {
+                        const val = cell.textContent.trim();
+                        if (cId.endsWith('no')) {
+                          entry.kartNumber = val;
+                        } else if (cId.endsWith('dr')) {
+                          const driverName = val.replace(/&nbsp;/g, ' ').trim();
+                          if (driverName && !driverName.includes('Piloto') && driverName !== '') {
+                            entry.drivers.add(driverName);
+                          }
+                        } else if (cId.endsWith('blp')) {
+                          const bestMs = parseTimeToMs(val);
+                          if (bestMs > 0) entry.bestLapMs = bestMs;
+                        }
+                      }
+                    });
+                    this.mergeRowToGlobal(rId);
+                  }
+                });
+                hasUpdates = true;
+              } catch(err) {}
+            }
+
+            // Real-time grid cell updates (suffix matching)
             if (cellId.startsWith('r')) {
               const match = cellId.match(/^(r\d+)(.*)$/);
               if (match) {
                 const rowId = match[1];
                 const suffix = match[2];
 
-                if (!this.kartRegistry.has(rowId)) {
-                  this.kartRegistry.set(rowId, {
+                if (!this.sessionRows.has(rowId)) {
+                  this.sessionRows.set(rowId, {
                     kartNumber: '',
                     drivers: new Set(),
                     lapsMs: [],
-                    bestLapMs: 0
+                    bestLapMs: 0,
+                    mergedLapsCount: 0
                   });
                 }
 
-                const entry = this.kartRegistry.get(rowId);
+                const entry = this.sessionRows.get(rowId);
                 hasUpdates = true;
 
                 if (suffix === 'dr') {
@@ -454,6 +645,9 @@
                     }
                   }
                 }
+
+                // Propagate session changes instantly into global database
+                this.mergeRowToGlobal(rowId);
               }
             }
           }
@@ -482,40 +676,8 @@
       }
 
       calculateAverageClassification() {
-        const kartsMap = new Map();
-
-        this.kartRegistry.forEach((rowEntry) => {
-          const kartNum = rowEntry.kartNumber;
-          if (!kartNum || kartNum === '' || kartNum === '0') return;
-
-          if (!kartsMap.has(kartNum)) {
-            kartsMap.set(kartNum, {
-              kartNumber: kartNum,
-              drivers: new Set(),
-              lapsMs: [],
-              bestLapMs: 0
-            });
-          }
-
-          const kartEntry = kartsMap.get(kartNum);
-
-          rowEntry.drivers.forEach(d => {
-            if (d) kartEntry.drivers.add(d);
-          });
-
-          rowEntry.lapsMs.forEach(lap => {
-            if (lap > 0) kartEntry.lapsMs.push(lap);
-          });
-
-          if (rowEntry.bestLapMs > 0) {
-            if (!kartEntry.bestLapMs || rowEntry.bestLapMs < kartEntry.bestLapMs) {
-              kartEntry.bestLapMs = rowEntry.bestLapMs;
-            }
-          }
-        });
-
         const results = [];
-        kartsMap.forEach((entry, kartNum) => {
+        this.globalKarts.forEach((entry, kartNum) => {
           const validLaps = entry.lapsMs.filter(l => l > 0);
           const totalMs = validLaps.reduce((a, b) => a + b, 0);
           const avgMs = validLaps.length > 0 ? Math.round(totalMs / validLaps.length) : entry.bestLapMs;
@@ -543,9 +705,10 @@
 
       resetCurrentCircuitData() {
         const keyKarts = `apex_karts_db_${this.circuit.id}`;
-        this.kartRegistry.clear();
+        this.sessionRows.clear();
+        this.globalKarts.clear();
         localStorage.removeItem(keyKarts);
-        this.broadcastState(`REINICIADOS DATOS DE: ${this.circuit.name}`);
+        this.broadcastState(`REINICIADOS TODOS LOS DATOS DE: ${this.circuit.name}`);
       }
     }
 
@@ -666,27 +829,20 @@
           ) : (
             <div className="space-y-2 sm:space-y-2.5">
               {classifiedKarts.map((kart, idx) => {
-                const isBestAvg = idx === 0;
-                const isWorstAvg = idx === classifiedKarts.length - 1 && classifiedKarts.length > 1;
+                const tier = getKartPerformanceTier(idx, classifiedKarts.length);
                 const isExpanded = selectedKart === kart.kartNumber;
                 const deltaVsBestAvg = bestOverallAvgMs > 0 ? (kart.avgLapMs - bestOverallAvgMs) / 1000 : 0;
 
                 return (
                   <div
                     key={kart.kartNumber}
-                    className={`bg-zinc-950 border-2 rounded-2xl p-2.5 sm:p-3.5 transition-all ${
-                      isBestAvg 
-                        ? 'border-race-purple shadow-[0_0_25px_rgba(217,70,239,0.4)]' 
-                        : isWorstAvg
-                        ? 'border-red-950/80 shadow-[0_0_15px_rgba(255,51,68,0.2)]'
-                        : 'border-zinc-800 hover:border-zinc-700'
-                    }`}
+                    className={`bg-zinc-950 border-2 rounded-2xl p-2.5 sm:p-3.5 transition-all ${tier.borderClass}`}
                   >
                     {/* Top Line */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 sm:gap-3 min-w-0 pr-2">
                         <div className={`flex items-center justify-center font-mono font-black text-sm sm:text-base w-8 h-8 sm:w-9 sm:h-9 rounded-xl shrink-0 ${
-                          isBestAvg ? 'bg-race-purple text-black shadow-[0_0_12px_rgba(217,70,239,0.6)]' :
+                          idx === 0 ? 'bg-race-purple text-black shadow-[0_0_12px_rgba(217,70,239,0.6)]' :
                           idx === 1 ? 'bg-purple-900 text-white' :
                           idx === 2 ? 'bg-zinc-800 text-purple-300' : 'bg-black text-zinc-500 border border-zinc-800'
                         }`}>
@@ -698,11 +854,9 @@
                             <span className="text-white font-black text-base sm:text-lg">
                               KART #{kart.kartNumber}
                             </span>
-                            <span className={`text-[9px] sm:text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                              isBestAvg ? 'bg-purple-950/80 border-race-purple text-race-purple text-glow-purple' :
-                              'bg-zinc-900 border-zinc-700 text-zinc-300'
-                            }`}>
-                              {isBestAvg ? '🚀 MEJOR MEDIA' : isWorstAvg ? '🐌 PEOR MEDIA' : `POS #${idx + 1}`}
+                            <span className={`text-[9px] sm:text-[10px] font-black px-2 py-0.5 rounded-full border flex items-center gap-1 ${tier.colorClass}`}>
+                              <span>{tier.emoji}</span>
+                              <span>{tier.label}</span>
                             </span>
                           </div>
                           <div className="text-[10px] sm:text-[11px] text-zinc-400 mt-0.5 truncate">
@@ -714,9 +868,7 @@
                       {/* Average Lap Time */}
                       <div className="text-right shrink-0">
                         <div className="text-[8px] sm:text-[9px] text-zinc-500 font-bold uppercase">MEDIA VUELTA</div>
-                        <div className={`text-lg sm:text-xl font-black ${
-                          isBestAvg ? 'text-race-purple text-glow-purple' : 'text-white'
-                        }`}>
+                        <div className={`text-lg sm:text-xl font-black ${tier.textGlowClass}`}>
                           {formatLapTime(kart.avgLapMs)}
                         </div>
                       </div>
@@ -725,8 +877,8 @@
                     {/* Metrics Bar */}
                     <div className="grid grid-cols-3 gap-1.5 mt-2.5 pt-2 border-t border-zinc-900 text-center">
                       <div className="bg-black border border-zinc-900 rounded-xl p-1.5">
-                        <span className="text-[8px] sm:text-[9px] text-zinc-500 font-bold block uppercase">MEDIA</span>
-                        <span className="text-xs sm:text-sm font-black text-race-purple text-glow-purple">
+                        <span className="text-[8px] sm:text-[9px] text-zinc-500 font-bold block uppercase">MEDIA ({kart.totalLaps} V)</span>
+                        <span className={`text-xs sm:text-sm font-black ${tier.textGlowClass}`}>
                           {formatLapTime(kart.avgLapMs)}
                         </span>
                       </div>
