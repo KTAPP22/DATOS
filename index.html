@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <title>Apex Karting Real Telemetry - Column Mapper Engine</title>
+  <title>Apex Karting Real Telemetry - Multi Circuit</title>
   
   <!-- React & ReactDOM -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -84,6 +84,13 @@
         url: 'https://www.apex-timing.com/live-timing/ariza-racing-circuit/',
         trackLength: '1.240m',
         configPort: 8970
+      },
+      {
+        id: 'kartodromo-lucas-guerrero',
+        name: '🏁 Kartódromo Lucas Guerrero (Valencia)',
+        url: 'https://live.apex-timing.com/kartodromo-lucas-guerrero/',
+        trackLength: '1.428m',
+        configPort: 9950
       }
     ];
 
@@ -97,7 +104,6 @@
       return Math.round(parseFloat(parts[0]) * 1000);
     }
 
-    // Lap time formatter
     function formatLapTime(ms) {
       if (!ms || isNaN(ms) || ms === 0) return "--.---";
       const totalSeconds = ms / 1000;
@@ -110,7 +116,6 @@
       return seconds;
     }
 
-    // Gap formatter
     function formatDelta(deltaSeconds) {
       if (deltaSeconds === null || deltaSeconds === undefined || isNaN(deltaSeconds)) return " 0.000";
       const sign = deltaSeconds > 0 ? "+" : "";
@@ -301,9 +306,11 @@
         }
       }
 
+      // Discover host using the circuit's main URL directly
       async discoverCorrectHost() {
         try {
-          const configUrl = `https://www.apex-timing.com/live-timing/${this.circuit.id}/javascript/config.js`;
+          const baseUrl = this.circuit.url.endsWith('/') ? this.circuit.url : this.circuit.url + '/';
+          const configUrl = `${baseUrl}javascript/config.js`;
           const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(configUrl)}`;
           
           const response = await fetch(proxyUrl);

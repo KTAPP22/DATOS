@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <title>Apex Karting Real Telemetry - Column Mapper Engine</title>
+  <title>Apex Karting Real Telemetry - Multi Circuit</title>
   
   <!-- React & ReactDOM -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -84,6 +84,13 @@
         url: 'https://www.apex-timing.com/live-timing/ariza-racing-circuit/',
         trackLength: '1.240m',
         configPort: 8970
+      },
+      {
+        id: 'kartodromo-lucas-guerrero',
+        name: '🏁 Kartódromo Lucas Guerrero (Valencia)',
+        url: 'https://live.apex-timing.com/kartodromo-lucas-guerrero/',
+        trackLength: '1.428m',
+        configPort: 9950
       }
     ];
 
@@ -109,7 +116,6 @@
       return seconds;
     }
 
-    // Gap formatter
     function formatDelta(deltaSeconds) {
       if (deltaSeconds === null || deltaSeconds === undefined || isNaN(deltaSeconds)) return " 0.000";
       const sign = deltaSeconds > 0 ? "+" : "";
@@ -300,9 +306,11 @@
         }
       }
 
+      // Discover host using the circuit's main URL directly
       async discoverCorrectHost() {
         try {
-          const configUrl = `https://www.apex-timing.com/live-timing/${this.circuit.id}/javascript/config.js`;
+          const baseUrl = this.circuit.url.endsWith('/') ? this.circuit.url : this.circuit.url + '/';
+          const configUrl = `${baseUrl}javascript/config.js`;
           const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(configUrl)}`;
           
           const response = await fetch(proxyUrl);
@@ -533,7 +541,6 @@
             const cellId = parts[0];
             const value = parts[2];
 
-            // Reset rows mappings when a new session starts
             if (cellId === 'init' || cellId === 'grid') {
               this.sessionRows.clear();
               console.log('[Apex Client] New Session / Init packet detected. Resetting active rows.');
@@ -558,13 +565,11 @@
               }
             }
 
-            // Grid Initializer Parser (dynamically reads headers and body rows)
             if (cellId === 'grid') {
               try {
                 const tempDiv = document.createElement('div');
                 tempDiv.innerHTML = parts.slice(2).join('|');
                 
-                // Parse headers row "r0" to map indices dynamically
                 const headRow = tempDiv.querySelector('tr[data-id="r0"]') || tempDiv.querySelector('tr.head');
                 if (headRow) {
                   const headerCells = headRow.querySelectorAll('td');
@@ -596,7 +601,6 @@
                     }
                     const entry = this.sessionRows.get(rId);
                     
-                    // Parse all cells or inner divs that hold a data-id inside this row
                     const elementsWithId = row.querySelectorAll('[data-id]');
                     elementsWithId.forEach(el => {
                       const cId = el.getAttribute('data-id'); 
@@ -625,12 +629,11 @@
               } catch(err) {}
             }
 
-            // Real-time incremental cell parser
             if (cellId.startsWith('r')) {
               const match = cellId.match(/^(r\d+)(.*)$/);
               if (match) {
                 const rowId = match[1];
-                const suffix = match[2]; // e.g. "c4", "c5", "c9", "c10"
+                const suffix = match[2]; 
 
                 if (!this.sessionRows.has(rowId)) {
                   this.sessionRows.set(rowId, {
