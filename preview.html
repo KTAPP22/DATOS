@@ -871,8 +871,22 @@
         const keyKarts = `apex_karts_db_${this.circuit.id}`;
         this.sessionRows.clear();
         this.globalKarts.clear();
+        
+        // Remove circuit storage and any legacy keys
         localStorage.removeItem(keyKarts);
-        this.broadcastState(`REINICIADOS TODOS LOS DATOS DE: ${this.circuit.name}`);
+        localStorage.removeItem('apex_karts_db');
+
+        // Reset sequence & message counters
+        this.pollInit = 0;
+        this.pollIndex = 0;
+        this.pollCounter = 0;
+        this.wsMessagesReceived = 0;
+        this.httpMessagesReceived = 0;
+        this.totalPayloadsProcessed = 0;
+        this.lastLapTimestamp = Date.now();
+
+        console.log(`[Apex Client] COMPLETE DATA RESET FOR: ${this.circuit.name}`);
+        this.broadcastState(`🗑️ DATOS BORRADOS CORRECTAMENTE. LISTO PARA RECOPILAR DATOS NUEVOS.`);
       }
     }
 
