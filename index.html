@@ -209,7 +209,7 @@
       }
     }
 
-    // HIGH PRECISION REAL APEX TIMING CLIENT (DYNAMIC COLUMN MAPPING + SEQUENCE POLICING + DUAL REGISTRY)
+    // HIGH PRECISION REAL APEX TIMING CLIENT
     class RealApexTimingClient {
       constructor(circuit, onUpdate, onSessionFinishedAlert) {
         this.circuit = circuit;
@@ -221,7 +221,7 @@
         
         this.configHost = 'live-data.apex-timing.com'; 
         
-        // Dynamic column mapping (maps 'no', 'dr', 'llp', 'blp' to layout cells like 'c4', 'c5', etc.)
+        // Dynamic & fallback column index mappings
         this.columnMap = {
           no: 'c4',
           dr: 'c5',
@@ -276,7 +276,7 @@
         } catch(e) {}
       }
 
-      async start() {
+      start() {
         console.log('[Apex Client] Starting connection for:', this.circuit.name);
         
         window.addEventListener('beforeunload', this.handleBeforeUnload);
@@ -284,16 +284,18 @@
         document.addEventListener('visibilitychange', this.handleVisibilityChange);
 
         const initialStatus = this.isRecording 
-          ? '🟢 CONECTANDO AL SERVIDOR DE APEX...' 
+          ? '🔴 REGISTRANDO DATOS EN VIVO...' 
           : '⏸️ CAPTURA EN PAUSA (PULSA REC ON)';
           
         this.broadcastState(initialStatus);
 
-        await this.discoverCorrectHost();
-
+        // INSTANT NON-BLOCKING WEBSOCKET CONNECT
         this.connectWebSocket();
         this.startHttpPollingFallback();
         this.startInactivityChecker();
+
+        // Non-blocking background host discovery
+        this.discoverCorrectHost();
 
         if (this.isRecording) {
           this.acquireWakeLock();
@@ -301,24 +303,30 @@
         }
       }
 
-      // Discover host using the circuit's main URL directly
       async discoverCorrectHost() {
         try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
+
           const baseUrl = this.circuit.url.endsWith('/') ? this.circuit.url : this.circuit.url + '/';
           const configUrl = `${baseUrl}javascript/config.js`;
-          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(configUrl)}`;
+          const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(configUrl)}`;
           
-          const response = await fetch(proxyUrl);
+          const response = await fetch(proxyUrl, { signal: controller.signal });
+          clearTimeout(timeoutId);
           if (!response.ok) throw new Error();
           const jsText = await response.text();
           
           const hostMatch = jsText.match(/configHost\s*=\s*['"]([^'"]+)['"]/);
           if (hostMatch && hostMatch[1]) {
-            this.configHost = hostMatch[1].trim();
-            console.log(`[Host Discovery] Dynamically matched host: ${this.configHost}`);
+            const newHost = hostMatch[1].trim();
+            if (newHost !== this.configHost) {
+              this.configHost = newHost;
+              console.log(`[Host Discovery] Updated host to: ${this.configHost}`);
+              if (this.isRecording) this.connectWebSocket();
+            }
           }
         } catch(e) {
-          console.log('[Host Discovery] Falling back to standard: live-data.apex-timing.com');
           this.configHost = 'live-data.apex-timing.com';
         }
       }
@@ -416,7 +424,9 @@
 
       connectWebSocket() {
         try {
-          if (this.wsSocket) this.wsSocket.close();
+          if (this.wsSocket && (this.wsSocket.readyState === WebSocket.OPEN || this.wsSocket.readyState === WebSocket.CONNECTING)) {
+            return;
+          }
 
           const wsPort = this.circuit.configPort + 3;
           const wsUrl = `wss://${this.configHost}:${wsPort}/`;
@@ -425,6 +435,7 @@
           this.wsSocket = new WebSocket(wsUrl);
           
           this.wsSocket.onopen = () => {
+            console.log('[WebSocket] Connected successfully!');
             if (this.isRecording) {
               this.broadcastState('🔴 TELEMETRÍA REAL EN VIVO (WS)');
             }
@@ -437,8 +448,12 @@
 
           this.wsSocket.onclose = () => {
             if (this.isRecording) {
-              setTimeout(() => this.connectWebSocket(), 5000);
+              setTimeout(() => this.connectWebSocket(), 3000);
             }
+          };
+
+          this.wsSocket.onerror = (err) => {
+            console.log('[WebSocket] Connection error:', err);
           };
         } catch(e) {}
       }
@@ -448,11 +463,16 @@
           if (!this.isRecording) return;
 
           try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2500);
+
             const apiPort = this.circuit.configPort + 4;
             const targetUrl = `https://${this.configHost}/live-timing/commonv2/functions/live_ajax.php?version=1.0.0&init=${this.pollInit}&index=${this.pollIndex}&port=${apiPort}&counter=${this.pollCounter}&duration=100&id=${this.randomSessionId}&ignored=0`;
-            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+            const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
             
-            const response = await fetch(proxyUrl);
+            const response = await fetch(proxyUrl, { signal: controller.signal });
+            clearTimeout(timeoutId);
+
             if (!response.ok) throw new Error('CORS Proxy failed');
             const dataText = await response.text();
 
@@ -538,7 +558,7 @@
 
             if (cellId === 'init' || cellId === 'grid') {
               this.sessionRows.clear();
-              console.log('[Apex Client] New Session / Init packet detected. Resetting active rows.');
+              console.log('[Apex Client] New Session / Init packet detected.');
             }
 
             if (cellId === 'dyn1' || cellId === 'track') {
@@ -602,17 +622,17 @@
                       const colPart = cId.replace(/^r\d+/, ''); 
                       const val = el.textContent.trim();
                       
-                      if (colPart === this.columnMap.no) {
+                      if (colPart === this.columnMap.no || colPart === 'c4' || colPart === 'no') {
                         entry.kartNumber = val;
-                      } else if (colPart === this.columnMap.dr) {
+                      } else if (colPart === this.columnMap.dr || colPart === 'c5' || colPart === 'dr') {
                         const driverName = val.replace(/&nbsp;/g, ' ').trim();
                         if (driverName && !driverName.includes('Piloto') && driverName !== '') {
                           entry.drivers.add(driverName);
                         }
-                      } else if (colPart === this.columnMap.blp) {
+                      } else if (colPart === this.columnMap.blp || colPart === 'c10' || colPart === 'blp') {
                         const bestMs = parseTimeToMs(val);
                         if (bestMs > 0) entry.bestLapMs = bestMs;
-                      } else if (colPart === this.columnMap.llp) {
+                      } else if (colPart === this.columnMap.llp || colPart === 'c9' || colPart === 'llp') {
                         const lastMs = parseTimeToMs(val);
                         if (lastMs > 0) entry.lapsMs.push(lastMs);
                       }
@@ -643,19 +663,19 @@
                 const entry = this.sessionRows.get(rowId);
                 hasUpdates = true;
 
-                if (suffix === this.columnMap.dr) {
+                if (suffix === this.columnMap.dr || suffix === 'c5' || suffix === 'dr') {
                   const driverName = value.replace(/&nbsp;/g, ' ').trim();
                   if (driverName && !driverName.includes('Piloto') && driverName !== '') {
                     entry.drivers.add(driverName);
                   }
-                } else if (suffix === this.columnMap.no) {
+                } else if (suffix === this.columnMap.no || suffix === 'c4' || suffix === 'no') {
                   entry.kartNumber = value.trim();
-                } else if (suffix === this.columnMap.blp) {
+                } else if (suffix === this.columnMap.blp || suffix === 'c10' || suffix === 'blp') {
                   const bestMs = parseTimeToMs(value);
                   if (bestMs > 0) {
                     entry.bestLapMs = bestMs;
                   }
-                } else if (suffix === this.columnMap.llp) {
+                } else if (suffix === this.columnMap.llp || suffix === 'c9' || suffix === 'llp') {
                   const lastMs = parseTimeToMs(value);
                   if (lastMs > 0) {
                     entry.lapsMs.push(lastMs);
@@ -699,18 +719,24 @@
         this.globalKarts.forEach((entry, kartNum) => {
           const validLaps = entry.lapsMs.filter(l => l > 0);
           const totalMs = validLaps.reduce((a, b) => a + b, 0);
-          const avgMs = validLaps.length > 0 ? Math.round(totalMs / validLaps.length) : entry.bestLapMs;
+          const avgMs = validLaps.length > 0 ? Math.round(totalMs / validLaps.length) : (entry.bestLapMs || 0);
 
-          results.push({
-            kartNumber: kartNum,
-            drivers: Array.from(entry.drivers),
-            avgLapMs: avgMs || entry.bestLapMs || 0,
-            bestLapMs: entry.bestLapMs || 0,
-            totalLaps: validLaps.length
-          });
+          if (avgMs > 0 || entry.bestLapMs > 0) {
+            results.push({
+              kartNumber: kartNum,
+              drivers: Array.from(entry.drivers),
+              avgLapMs: avgMs || entry.bestLapMs || 0,
+              bestLapMs: entry.bestLapMs || 0,
+              totalLaps: validLaps.length
+            });
+          }
         });
 
-        return results.sort((a, b) => a.avgLapMs - b.avgLapMs);
+        return results.sort((a, b) => {
+          if (a.avgLapMs === 0) return 1;
+          if (b.avgLapMs === 0) return -1;
+          return a.avgLapMs - b.avgLapMs;
+        });
       }
 
       broadcastState(statusText) {
