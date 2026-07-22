@@ -91,12 +91,27 @@
 
     function parseTimeToMs(timeStr) {
       if (!timeStr || timeStr === '--.---' || timeStr === '') return 0;
-      const clean = timeStr.replace(/[^0-9:.]/g, '').trim();
+      const str = String(timeStr).trim();
+      
+      // Reject any interval or gap value (starts with + or - or contains +)
+      if (str.startsWith('+') || str.startsWith('-') || str.includes('+')) return 0;
+      
+      const clean = str.replace(/[^0-9:.]/g, '').trim();
+      if (!clean) return 0;
+
+      let ms = 0;
       const parts = clean.split(':');
       if (parts.length === 2) {
-        return Math.round((parseFloat(parts[0]) * 60 + parseFloat(parts[1])) * 1000);
+        ms = Math.round((parseFloat(parts[0]) * 60 + parseFloat(parts[1])) * 1000);
+      } else if (parts.length === 1) {
+        ms = Math.round(parseFloat(parts[0]) * 1000);
       }
-      return Math.round(parseFloat(parts[0]) * 1000);
+
+      // Valid kart lap times are between 35 seconds (35,000ms) and 10 minutes (600,000ms)
+      // Any value less than 35,000ms is a gap/interval or sector delta!
+      if (ms < 35000 || ms > 600000) return 0;
+
+      return ms;
     }
 
     function formatLapTime(ms) {
@@ -316,11 +331,33 @@
           if (savedKarts) {
             const parsed = JSON.parse(savedKarts);
             Object.keys(parsed).forEach(kart => {
+              const rawSessions = parsed[kart].sessions || [];
+              const cleanSessions = rawSessions.map(sess => {
+                const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
+                const sumMs = validLaps.reduce((a, b) => a + b, 0);
+                const sessionAvgMs = validLaps.length > 0 ? Math.round(sumMs / validLaps.length) : 0;
+                const bestLapMs = validLaps.length > 0 ? Math.min(...validLaps) : 0;
+                return {
+                  sessionId: sess.sessionId,
+                  driver: sess.driver || 'Piloto',
+                  lapsMs: validLaps,
+                  sessionAvgMs,
+                  bestLapMs
+                };
+              }).filter(sess => sess.lapsMs.length > 0 || sess.sessionAvgMs > 0);
+
+              let globalBest = 0;
+              cleanSessions.forEach(s => {
+                if (s.bestLapMs > 0 && (!globalBest || s.bestLapMs < globalBest)) {
+                  globalBest = s.bestLapMs;
+                }
+              });
+
               this.globalKarts.set(kart, {
                 kartNumber: parsed[kart].kartNumber || kart,
                 drivers: new Set(parsed[kart].drivers || []),
-                sessions: parsed[kart].sessions || [],
-                bestLapMs: parsed[kart].bestLapMs || 0,
+                sessions: cleanSessions,
+                bestLapMs: globalBest,
                 lastRecordedLapStr: parsed[kart].lastRecordedLapStr || '',
                 lastRecordedTotalLaps: parsed[kart].lastRecordedTotalLaps || 0,
                 lastRecordedSessionId: parsed[kart].lastRecordedSessionId || 0
@@ -698,12 +735,16 @@
       updateSessionAverages(globalEntry) {
         let globalBest = 0;
         globalEntry.sessions.forEach(sess => {
-          const validLaps = sess.lapsMs.filter(l => l > 0);
+          const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
+          sess.lapsMs = validLaps;
           if (validLaps.length > 0) {
             const sumMs = validLaps.reduce((a, b) => a + b, 0);
             sess.sessionAvgMs = Math.round(sumMs / validLaps.length);
             sess.bestLapMs = Math.min(...validLaps);
             if (!globalBest || sess.bestLapMs < globalBest) globalBest = sess.bestLapMs;
+          } else {
+            sess.sessionAvgMs = 0;
+            sess.bestLapMs = 0;
           }
         });
         if (globalBest > 0) globalEntry.bestLapMs = globalBest;
