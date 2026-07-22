@@ -713,10 +713,7 @@
 
         // INITIAL SEEDING: If this kart has 0 laps recorded across all sessions
         if (totalLapsCountAllSess === 0) {
-          if (row.bestLapMs > 0) {
-            activeSession.lapsMs.push(row.bestLapMs);
-          }
-          if (row.lastLapMs > 0 && row.lastLapMs !== row.bestLapMs) {
+          if (row.lastLapMs > 0) {
             activeSession.lapsMs.push(row.lastLapMs);
           }
           if (row.lastLapStr) globalEntry.lastRecordedLapStr = row.lastLapStr;
@@ -746,6 +743,7 @@
       updateSessionAverages(globalEntry) {
         let globalBest = 0;
         globalEntry.sessions.forEach(sess => {
+          // Laps for session average MUST come strictly from c9 (Última vuelta / lastLapMs)
           const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 45000 && l <= 600000);
           sess.lapsMs = validLaps;
           if (validLaps.length > 0) {
@@ -755,7 +753,7 @@
             sess.bestLapMs = (sess.officialBestLapMs && sess.officialBestLapMs > 0) ? sess.officialBestLapMs : calcBest;
             if (!globalBest || sess.bestLapMs < globalBest) globalBest = sess.bestLapMs;
           } else if (sess.officialBestLapMs && sess.officialBestLapMs > 0) {
-            sess.sessionAvgMs = sess.officialBestLapMs;
+            sess.sessionAvgMs = 0;
             sess.bestLapMs = sess.officialBestLapMs;
             if (!globalBest || sess.bestLapMs < globalBest) globalBest = sess.bestLapMs;
           } else {
