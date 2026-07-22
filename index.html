@@ -95,21 +95,25 @@
       
       // Reject any interval or gap value (starts with + or - or contains +)
       if (str.startsWith('+') || str.startsWith('-') || str.includes('+')) return 0;
-      
+
+      // Full lap times in Campillos & Lucas Guerrero always have a minute colon (e.g. 1:33.029)
+      // If there is no colon ':', it is a sector time (e.g. 38.707) or gap/interval, so reject!
+      if (!str.includes(':')) return 0;
+
       const clean = str.replace(/[^0-9:.]/g, '').trim();
       if (!clean) return 0;
 
-      let ms = 0;
       const parts = clean.split(':');
-      if (parts.length === 2) {
-        ms = Math.round((parseFloat(parts[0]) * 60 + parseFloat(parts[1])) * 1000);
-      } else if (parts.length === 1) {
-        ms = Math.round(parseFloat(parts[0]) * 1000);
-      }
+      if (parts.length !== 2) return 0;
 
-      // Valid kart lap times are between 35 seconds (35,000ms) and 10 minutes (600,000ms)
-      // Any value less than 35,000ms is a gap/interval or sector delta!
-      if (ms < 35000 || ms > 600000) return 0;
+      const minutes = parseFloat(parts[0]);
+      const seconds = parseFloat(parts[1]);
+      if (isNaN(minutes) || isNaN(seconds)) return 0;
+
+      const ms = Math.round((minutes * 60 + seconds) * 1000);
+
+      // Valid kart lap times in Campillos & Lucas Guerrero are between 45,000ms (45s) and 600,000ms (10m)
+      if (ms < 45000 || ms > 600000) return 0;
 
       return ms;
     }
@@ -333,7 +337,7 @@
             Object.keys(parsed).forEach(kart => {
               const rawSessions = parsed[kart].sessions || [];
               const cleanSessions = rawSessions.map(sess => {
-                const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
+                const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 45000 && l <= 600000);
                 const sumMs = validLaps.reduce((a, b) => a + b, 0);
                 const sessionAvgMs = validLaps.length > 0 ? Math.round(sumMs / validLaps.length) : 0;
                 const bestLapMs = validLaps.length > 0 ? Math.min(...validLaps) : 0;
@@ -735,7 +739,7 @@
       updateSessionAverages(globalEntry) {
         let globalBest = 0;
         globalEntry.sessions.forEach(sess => {
-          const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
+          const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 45000 && l <= 600000);
           sess.lapsMs = validLaps;
           if (validLaps.length > 0) {
             const sumMs = validLaps.reduce((a, b) => a + b, 0);
@@ -932,6 +936,12 @@
       applyColumnValue(entry, colSuffix, value) {
         if (!value || !colSuffix) return false;
         
+        // Explicitly ignore sector columns (c6, c7, c8) and gap/interval columns (c11, c12)
+        if (colSuffix === 'c6' || colSuffix === 'c7' || colSuffix === 'c8' || 
+            colSuffix === 'c11' || colSuffix === 'c12') {
+          return false;
+        }
+
         // Kart number
         if (colSuffix === this.columnMap.no || colSuffix === 'c4') {
           const kartNum = value.replace(/[^\d]/g, '');
