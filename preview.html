@@ -262,15 +262,51 @@
           (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
         ];
 
-        // Background Audio Keep-alive loop
+        // Background keep-alive & Web Audio API
         this.bgAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
         this.bgAudio.loop = true;
         this.wakeLock = null;
+        this.audioCtx = null;
+        
+        // Background WebWorker timer (keeps running when screen is locked)
+        this.bgWorker = null;
+        this.initBackgroundWorker();
+
+        // Session & Track Status tracking
+        this.isSessionFinishedOnTrack = false;
+        this.isWaitingForNewSession = false;
+        this.currentSessionId = 1;
 
         this.handleBeforeUnload = this.handleBeforeUnload.bind(this);
         this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
 
         this.loadCircuitStorage();
+      }
+
+      initBackgroundWorker() {
+        try {
+          const workerCode = `
+            let timer = null;
+            self.onmessage = function(e) {
+              if (e.data === 'start') {
+                if (!timer) timer = setInterval(function() { self.postMessage('ping'); }, 2500);
+              } else if (e.data === 'stop') {
+                if (timer) { clearInterval(timer); timer = null; }
+              }
+            };
+          `;
+          const blob = new Blob([workerCode], { type: 'application/javascript' });
+          this.bgWorker = new Worker(URL.createObjectURL(blob));
+          this.bgWorker.onmessage = () => {
+            if (this.isRecording) {
+              if (!this.wsSocket || this.wsSocket.readyState !== WebSocket.OPEN) {
+                this.connectWebSocket();
+              }
+            }
+          };
+        } catch(e) {
+          this.bgWorker = null;
+        }
       }
 
       loadCircuitStorage() {
@@ -283,10 +319,11 @@
               this.globalKarts.set(kart, {
                 kartNumber: parsed[kart].kartNumber || kart,
                 drivers: new Set(parsed[kart].drivers || []),
-                lapsMs: parsed[kart].lapsMs || [],
+                sessions: parsed[kart].sessions || [],
                 bestLapMs: parsed[kart].bestLapMs || 0,
                 lastRecordedLapStr: parsed[kart].lastRecordedLapStr || '',
-                lastRecordedTotalLaps: parsed[kart].lastRecordedTotalLaps || 0
+                lastRecordedTotalLaps: parsed[kart].lastRecordedTotalLaps || 0,
+                lastRecordedSessionId: parsed[kart].lastRecordedSessionId || 0
               });
             });
           }
@@ -393,13 +430,32 @@
       playBackgroundAudio() {
         try {
           this.bgAudio.play().catch(() => {});
+          if (!this.audioCtx) {
+            const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtxClass) {
+              this.audioCtx = new AudioCtxClass();
+              const osc = this.audioCtx.createOscillator();
+              const gain = this.audioCtx.createGain();
+              gain.gain.value = 0.001; // Silent heartbeat
+              osc.connect(gain);
+              gain.connect(this.audioCtx.destination);
+              osc.start();
+            }
+          } else if (this.audioCtx.state === 'suspended') {
+            this.audioCtx.resume();
+          }
         } catch(e) {}
+        if (this.bgWorker) this.bgWorker.postMessage('start');
       }
 
       stopBackgroundAudio() {
         try {
           this.bgAudio.pause();
+          if (this.audioCtx && this.audioCtx.state === 'running') {
+            this.audioCtx.suspend();
+          }
         } catch(e) {}
+        if (this.bgWorker) this.bgWorker.postMessage('stop');
       }
 
       setRecordingMode(enabled) {
@@ -410,10 +466,20 @@
           this.lastLapTimestamp = Date.now();
           this.acquireWakeLock();
           this.playBackgroundAudio();
-          const statusMsg = '🔴 REGISTRANDO DATOS EN VIVO...';
-          this.broadcastState(statusMsg);
+          
+          if (this.isSessionFinishedOnTrack) {
+            this.isWaitingForNewSession = true;
+            const statusMsg = '⏳ ESPERANDO A QUE EMPIECE UNA NUEVA SESIÓN (SESIÓN ANTERIOR FINALIZADA)';
+            this.broadcastState(statusMsg);
+          } else {
+            this.isWaitingForNewSession = false;
+            const statusMsg = '🔴 REGISTRANDO DATOS EN VIVO...';
+            this.broadcastState(statusMsg);
+          }
+          
           this.connectWebSocket();
         } else {
+          this.isWaitingForNewSession = false;
           this.releaseWakeLock();
           this.stopBackgroundAudio();
           const statusMsg = '⏸️ CAPTURA EN PAUSA';
@@ -429,10 +495,11 @@
             obj[key] = {
               kartNumber: val.kartNumber,
               drivers: Array.from(val.drivers),
-              lapsMs: val.lapsMs,
+              sessions: val.sessions || [],
               bestLapMs: val.bestLapMs,
               lastRecordedLapStr: val.lastRecordedLapStr,
-              lastRecordedTotalLaps: val.lastRecordedTotalLaps
+              lastRecordedTotalLaps: val.lastRecordedTotalLaps,
+              lastRecordedSessionId: val.lastRecordedSessionId
             };
           });
           localStorage.setItem(keyKarts, JSON.stringify(obj));
@@ -550,6 +617,8 @@
       // Continuously keeps HTTP polling active as fallback
 
       mergeRowToGlobal(rowId) {
+        if (this.isWaitingForNewSession) return; // Do not ingest data from old session
+
         const row = this.sessionRows.get(rowId);
         if (!row || !row.kartNumber || row.kartNumber === '' || row.kartNumber === '0') return;
 
@@ -558,10 +627,11 @@
           this.globalKarts.set(kartNum, {
             kartNumber: kartNum,
             drivers: new Set(),
-            lapsMs: [],
+            sessions: [],
             bestLapMs: 0,
             lastRecordedLapStr: '',
-            lastRecordedTotalLaps: 0
+            lastRecordedTotalLaps: 0,
+            lastRecordedSessionId: 0
           });
         }
 
@@ -572,48 +642,71 @@
           if (d) globalEntry.drivers.add(d);
         });
 
-        // Track best lap
-        if (row.bestLapMs > 0) {
-          if (!globalEntry.bestLapMs || row.bestLapMs < globalEntry.bestLapMs) {
-            globalEntry.bestLapMs = row.bestLapMs;
-          }
+        // Get driver name for current row
+        const currentDriver = Array.from(row.drivers)[0] || 'Piloto';
+
+        // Find or create current session for this kart
+        let activeSession = globalEntry.sessions.find(s => s.sessionId === this.currentSessionId);
+        if (!activeSession) {
+          activeSession = {
+            sessionId: this.currentSessionId,
+            driver: currentDriver,
+            lapsMs: [],
+            sessionAvgMs: 0,
+            bestLapMs: 0
+          };
+          globalEntry.sessions.push(activeSession);
+        } else if (currentDriver && currentDriver !== 'Piloto') {
+          activeSession.driver = currentDriver;
         }
 
-        // INITIAL SEEDING: If this kart has 0 laps recorded, seed with initial known valid laps
-        if (globalEntry.lapsMs.length === 0) {
+        // Calculate total laps recorded across all sessions
+        const totalLapsCountAllSess = globalEntry.sessions.reduce((sum, s) => sum + s.lapsMs.length, 0);
+
+        // INITIAL SEEDING: If this kart has 0 laps recorded across all sessions
+        if (totalLapsCountAllSess === 0) {
           if (row.bestLapMs > 0) {
-            globalEntry.lapsMs.push(row.bestLapMs);
+            activeSession.lapsMs.push(row.bestLapMs);
           }
           if (row.lastLapMs > 0 && row.lastLapMs !== row.bestLapMs) {
-            globalEntry.lapsMs.push(row.lastLapMs);
+            activeSession.lapsMs.push(row.lastLapMs);
           }
-          if (row.lastLapStr) {
-            globalEntry.lastRecordedLapStr = row.lastLapStr;
-          }
-          if (row.totalLaps > 0) {
-            globalEntry.lastRecordedTotalLaps = row.totalLaps;
-          }
+          if (row.lastLapStr) globalEntry.lastRecordedLapStr = row.lastLapStr;
+          if (row.totalLaps > 0) globalEntry.lastRecordedTotalLaps = row.totalLaps;
+          globalEntry.lastRecordedSessionId = this.currentSessionId;
+          this.updateSessionAverages(globalEntry);
           this.lastLapTimestamp = Date.now();
           return;
         }
 
         // LIVE LAP DEDUPLICATION:
-        // A new lap is recorded ONLY IF lastLapStr changed OR totalLaps increased
         const isNewLapString = row.lastLapStr && row.lastLapStr !== globalEntry.lastRecordedLapStr;
         const isNewLapCount = row.totalLaps && row.totalLaps > globalEntry.lastRecordedTotalLaps;
+        const isNewSession = globalEntry.lastRecordedSessionId !== this.currentSessionId;
 
-        if (row.lastLapMs > 0 && (isNewLapString || isNewLapCount)) {
-          globalEntry.lapsMs.push(row.lastLapMs);
+        if (row.lastLapMs > 0 && (isNewLapString || isNewLapCount || isNewSession)) {
+          activeSession.lapsMs.push(row.lastLapMs);
           globalEntry.lastRecordedLapStr = row.lastLapStr;
-          if (row.totalLaps > 0) {
-            globalEntry.lastRecordedTotalLaps = row.totalLaps;
-          }
-          if (!globalEntry.bestLapMs || row.lastLapMs < globalEntry.bestLapMs) {
-            globalEntry.bestLapMs = row.lastLapMs;
-          }
+          if (row.totalLaps > 0) globalEntry.lastRecordedTotalLaps = row.totalLaps;
+          globalEntry.lastRecordedSessionId = this.currentSessionId;
+          this.updateSessionAverages(globalEntry);
           this.lastLapTimestamp = Date.now();
-          console.log(`[Lap Acc] NEW LAP RECORDED: Kart #${kartNum} Lap #${globalEntry.lapsMs.length} = ${row.lastLapStr} (${row.lastLapMs}ms)`);
+          console.log(`[Lap Acc] NEW LAP: Kart #${kartNum} Session #${this.currentSessionId} Lap #${activeSession.lapsMs.length} = ${row.lastLapStr}`);
         }
+      }
+
+      updateSessionAverages(globalEntry) {
+        let globalBest = 0;
+        globalEntry.sessions.forEach(sess => {
+          const validLaps = sess.lapsMs.filter(l => l > 0);
+          if (validLaps.length > 0) {
+            const sumMs = validLaps.reduce((a, b) => a + b, 0);
+            sess.sessionAvgMs = Math.round(sumMs / validLaps.length);
+            sess.bestLapMs = Math.min(...validLaps);
+            if (!globalBest || sess.bestLapMs < globalBest) globalBest = sess.bestLapMs;
+          }
+        });
+        if (globalBest > 0) globalEntry.bestLapMs = globalBest;
       }
 
       processRawApexPayload(dataStr) {
@@ -639,7 +732,14 @@
           // Init resets session rows (new session starting)
           if (cellId === 'init') {
             this.sessionRows.clear();
-            console.log('[Parser] INIT received - session rows cleared');
+            this.currentSessionId += 1;
+            this.isSessionFinishedOnTrack = false;
+            if (this.isWaitingForNewSession) {
+              this.isWaitingForNewSession = false;
+              console.log('[Parser] NEW SESSION STARTED via init payload!');
+              this.broadcastState('🔴 REGISTRANDO DATOS DE NUEVA SESIÓN EN VIVO...');
+            }
+            console.log(`[Parser] INIT received - New Session #${this.currentSessionId}`);
             continue;
           }
 
@@ -651,7 +751,7 @@
             continue;
           }
 
-          // Track session status - CONTINUOUS RECORDING (triggers notice without pausing)
+          // Track session status
           if (cellId === 'dyn1' || cellId === 'track') {
             if (valueType === 'count') continue;
             const statusLower = value.toLowerCase();
@@ -662,7 +762,22 @@
               statusLower.includes('finish') ||
               statusLower.includes('finaliz')
             )) {
+              this.isSessionFinishedOnTrack = true;
               this.triggerSessionNotice(`BANDERA A CUADROS (${value})`);
+            } else if (statusLower && (
+              statusLower.includes('green') ||
+              statusLower.includes('libre') ||
+              statusLower.includes('carrera') ||
+              statusLower.includes('entrenam') ||
+              statusLower.includes('active') ||
+              statusLower.includes('pista')
+            )) {
+              this.isSessionFinishedOnTrack = false;
+              if (this.isWaitingForNewSession) {
+                this.isWaitingForNewSession = false;
+                console.log('[Parser] NEW SESSION ACTIVE via track status!');
+                this.broadcastState('🔴 REGISTRANDO DATOS DE NUEVA SESIÓN EN VIVO...');
+              }
             }
             continue;
           }
@@ -836,17 +951,27 @@
       calculateAverageClassification() {
         const results = [];
         this.globalKarts.forEach((entry, kartNum) => {
-          const validLaps = entry.lapsMs.filter(l => l > 0);
-          const totalMs = validLaps.reduce((a, b) => a + b, 0);
-          const avgMs = validLaps.length > 0 ? Math.round(totalMs / validLaps.length) : (entry.bestLapMs || 0);
+          const sessions = entry.sessions || [];
+          const validSessions = sessions.filter(s => s.sessionAvgMs > 0);
+          
+          let overallAvgMs = 0;
+          let totalLapsAllSessions = 0;
 
-          if (avgMs > 0 || entry.bestLapMs > 0) {
+          if (validSessions.length > 0) {
+            const sumSessionAvgs = validSessions.reduce((sum, s) => sum + s.sessionAvgMs, 0);
+            overallAvgMs = Math.round(sumSessionAvgs / validSessions.length);
+            totalLapsAllSessions = sessions.reduce((sum, s) => sum + s.lapsMs.length, 0);
+          }
+
+          if (overallAvgMs > 0 || entry.bestLapMs > 0) {
             results.push({
               kartNumber: kartNum,
               drivers: Array.from(entry.drivers),
-              avgLapMs: avgMs || entry.bestLapMs || 0,
+              sessions: sessions,
+              sessionsCount: sessions.length,
+              avgLapMs: overallAvgMs || entry.bestLapMs || 0,
               bestLapMs: entry.bestLapMs || 0,
-              totalLaps: validLaps.length
+              totalLaps: totalLapsAllSessions
             });
           }
         });
@@ -1055,14 +1180,14 @@
                             </span>
                           </div>
                           <div className="text-[10px] sm:text-[11px] text-zinc-400 mt-0.5 truncate">
-                            👤 PILOTOS: <strong className="text-race-purple font-extrabold">{kart.drivers.length > 0 ? `${kart.drivers.length} ${kart.drivers.length === 1 ? 'persona' : 'personas'}` : 'Registrando en vivo...'}</strong>
+                            🏁 SESIONES: <strong className="text-race-purple font-extrabold">{kart.sessionsCount || 1} {kart.sessionsCount === 1 ? 'tanda' : 'tandas'} ({kart.totalLaps} vueltas)</strong>
                           </div>
                         </div>
                       </div>
 
                       {/* Average Lap Time */}
                       <div className="text-right shrink-0">
-                        <div className="text-[8px] sm:text-[9px] text-zinc-500 font-bold uppercase">MEDIA VUELTA</div>
+                        <div className="text-[8px] sm:text-[9px] text-zinc-500 font-bold uppercase">MEDIA COMBINADA</div>
                         <div className={`text-lg sm:text-xl font-black ${tier.textGlowClass}`}>
                           {formatLapTime(kart.avgLapMs)}
                         </div>
@@ -1072,14 +1197,14 @@
                     {/* Metrics Bar */}
                     <div className="grid grid-cols-3 gap-1.5 mt-2.5 pt-2 border-t border-zinc-900 text-center">
                       <div className="bg-black border border-zinc-900 rounded-xl p-1.5">
-                        <span className="text-[8px] sm:text-[9px] text-zinc-500 font-bold block uppercase">MEDIA ({kart.totalLaps} V)</span>
+                        <span className="text-[8px] sm:text-[9px] text-zinc-500 font-bold block uppercase">MEDIA GLOBAL</span>
                         <span className={`text-xs sm:text-sm font-black ${tier.textGlowClass}`}>
                           {formatLapTime(kart.avgLapMs)}
                         </span>
                       </div>
 
                       <div className="bg-black border border-zinc-900 rounded-xl p-1.5">
-                        <span className="text-[8px] sm:text-[9px] text-zinc-500 font-bold block uppercase">MEJOR</span>
+                        <span className="text-[8px] sm:text-[9px] text-zinc-500 font-bold block uppercase">MEJOR VUELTA</span>
                         <span className="text-xs sm:text-sm font-bold text-zinc-200">
                           {formatLapTime(kart.bestLapMs)}
                         </span>
@@ -1098,25 +1223,51 @@
                       onClick={() => setSelectedKart(isExpanded ? null : kart.kartNumber)}
                       className="w-full mt-2 pt-1 text-center text-[9px] sm:text-[10px] text-zinc-500 hover:text-race-purple transition-colors border-t border-zinc-900/60 font-bold py-1 active:scale-98"
                     >
-                      {isExpanded ? '▲ OCULTAR DETALLES' : '▼ VER PILOTOS QUE LO HAN LLEVADO'}
+                      {isExpanded ? '▲ OCULTAR DETALLES' : '▼ VER HISTORIAL DE TANDAS Y PILOTOS'}
                     </button>
 
                     {isExpanded && (
-                      <div className="mt-2 p-2 sm:p-2.5 bg-black border border-zinc-900 rounded-xl text-xs space-y-1.5">
-                        <div className="text-race-purple text-[9px] sm:text-[10px] font-bold uppercase">
-                          👥 PILOTOS REGISTRADOS EN EL KART #{kart.kartNumber}:
+                      <div className="mt-2 p-2 sm:p-2.5 bg-black border border-zinc-900 rounded-xl text-xs space-y-2">
+                        <div className="text-race-purple text-[9px] sm:text-[10px] font-bold uppercase flex items-center justify-between">
+                          <span>🏁 DESGLOSE DE TANDAS DEL KART #{kart.kartNumber}:</span>
+                          <span className="text-zinc-400 font-mono">{kart.sessionsCount || 1} {kart.sessionsCount === 1 ? 'tanda' : 'tandas'}</span>
                         </div>
-                        <div className="flex flex-wrap gap-1">
-                          {kart.drivers.length > 0 ? (
-                            kart.drivers.map((dName, dIdx) => (
-                              <span key={dIdx} className="bg-purple-950/60 border border-race-purple/40 text-race-purple px-2 py-0.5 rounded-md text-[9px] sm:text-[10px] font-bold">
-                                👤 {dName}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-zinc-500 text-[10px]">Sin pilotos registrados</span>
-                          )}
-                        </div>
+                        
+                        {kart.sessions && kart.sessions.length > 0 ? (
+                          <div className="space-y-1.5">
+                            {kart.sessions.map((sess, sIdx) => (
+                              <div key={sIdx} className="bg-zinc-900/60 border border-zinc-800 rounded-lg p-2 text-[10px] sm:text-[11px] flex items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="font-bold text-white flex items-center gap-1.5">
+                                    <span className="bg-purple-950 text-race-purple border border-purple-800 px-1.5 py-0.5 rounded text-[9px] font-mono font-black">
+                                      Tanda #{sIdx + 1}
+                                    </span>
+                                    <span className="text-zinc-200 truncate font-bold">👤 {sess.driver || 'Piloto'}</span>
+                                  </div>
+                                  <div className="text-[9px] text-zinc-400 mt-0.5 font-mono">
+                                    Vueltas: <span className="text-white font-bold">{sess.lapsMs ? sess.lapsMs.length : 0}</span> | Mejor: <span className="text-white font-bold">{formatLapTime(sess.bestLapMs)}</span>
+                                  </div>
+                                </div>
+                                <div className="text-right shrink-0">
+                                  <div className="text-[8px] text-zinc-500 font-bold uppercase">MEDIA TANDA</div>
+                                  <div className="text-xs sm:text-sm font-black text-race-purple">{formatLapTime(sess.sessionAvgMs)}</div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {kart.drivers.length > 0 ? (
+                              kart.drivers.map((dName, dIdx) => (
+                                <span key={dIdx} className="bg-purple-950/60 border border-race-purple/40 text-race-purple px-2 py-0.5 rounded-md text-[9px] sm:text-[10px] font-bold">
+                                  👤 {dName}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-zinc-500 text-[10px]">Sin tandas registradas</span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
