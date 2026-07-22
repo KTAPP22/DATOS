@@ -93,11 +93,10 @@
       if (!timeStr || timeStr === '--.---' || timeStr === '') return 0;
       const str = String(timeStr).trim();
       
-      // Reject any interval or gap value (starts with + or - or contains +)
-      if (str.startsWith('+') || str.startsWith('-') || str.includes('+')) return 0;
+      // Reject any interval or gap value (starts with + or -, or contains +, or contains 'L'/'Lap')
+      if (str.startsWith('+') || str.startsWith('-') || str.includes('+') || str.toLowerCase().includes('l')) return 0;
 
       // Full lap times in Campillos & Lucas Guerrero always have a minute colon (e.g. 1:33.029)
-      // If there is no colon ':', it is a sector time (e.g. 38.707) or gap/interval, so reject!
       if (!str.includes(':')) return 0;
 
       const clean = str.replace(/[^0-9:.]/g, '').trim();
@@ -340,17 +339,19 @@
                 const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 45000 && l <= 600000);
                 const sumMs = validLaps.reduce((a, b) => a + b, 0);
                 const sessionAvgMs = validLaps.length > 0 ? Math.round(sumMs / validLaps.length) : 0;
-                const bestLapMs = validLaps.length > 0 ? Math.min(...validLaps) : 0;
+                const calcBest = validLaps.length > 0 ? Math.min(...validLaps) : 0;
+                const bestLapMs = (sess.officialBestLapMs && sess.officialBestLapMs > 0) ? sess.officialBestLapMs : calcBest;
                 return {
                   sessionId: sess.sessionId,
                   driver: sess.driver || 'Piloto',
                   lapsMs: validLaps,
                   sessionAvgMs,
-                  bestLapMs
+                  bestLapMs,
+                  officialBestLapMs: sess.officialBestLapMs || bestLapMs
                 };
-              }).filter(sess => sess.lapsMs.length > 0 || sess.sessionAvgMs > 0);
+              }).filter(sess => sess.lapsMs.length > 0 || sess.sessionAvgMs > 0 || sess.officialBestLapMs > 0);
 
-              let globalBest = 0;
+              let globalBest = parsed[kart].officialBestLapMs || 0;
               cleanSessions.forEach(s => {
                 if (s.bestLapMs > 0 && (!globalBest || s.bestLapMs < globalBest)) {
                   globalBest = s.bestLapMs;
@@ -362,6 +363,7 @@
                 drivers: new Set(parsed[kart].drivers || []),
                 sessions: cleanSessions,
                 bestLapMs: globalBest,
+                officialBestLapMs: globalBest,
                 lastRecordedLapStr: parsed[kart].lastRecordedLapStr || '',
                 lastRecordedTotalLaps: parsed[kart].lastRecordedTotalLaps || 0,
                 lastRecordedSessionId: parsed[kart].lastRecordedSessionId || 0
@@ -538,6 +540,7 @@
               drivers: Array.from(val.drivers),
               sessions: val.sessions || [],
               bestLapMs: val.bestLapMs,
+              officialBestLapMs: val.officialBestLapMs || val.bestLapMs,
               lastRecordedLapStr: val.lastRecordedLapStr,
               lastRecordedTotalLaps: val.lastRecordedTotalLaps,
               lastRecordedSessionId: val.lastRecordedSessionId
@@ -701,6 +704,14 @@
           activeSession.driver = currentDriver;
         }
 
+        // Track official best lap from c10
+        if (row.bestLapMs > 0) {
+          activeSession.officialBestLapMs = row.bestLapMs;
+          if (!globalEntry.officialBestLapMs || row.bestLapMs < globalEntry.officialBestLapMs) {
+            globalEntry.officialBestLapMs = row.bestLapMs;
+          }
+        }
+
         // Calculate total laps recorded across all sessions
         const totalLapsCountAllSess = globalEntry.sessions.reduce((sum, s) => sum + s.lapsMs.length, 0);
 
@@ -744,14 +755,23 @@
           if (validLaps.length > 0) {
             const sumMs = validLaps.reduce((a, b) => a + b, 0);
             sess.sessionAvgMs = Math.round(sumMs / validLaps.length);
-            sess.bestLapMs = Math.min(...validLaps);
+            const calcBest = Math.min(...validLaps);
+            sess.bestLapMs = (sess.officialBestLapMs && sess.officialBestLapMs > 0) ? sess.officialBestLapMs : calcBest;
+            if (!globalBest || sess.bestLapMs < globalBest) globalBest = sess.bestLapMs;
+          } else if (sess.officialBestLapMs && sess.officialBestLapMs > 0) {
+            sess.sessionAvgMs = sess.officialBestLapMs;
+            sess.bestLapMs = sess.officialBestLapMs;
             if (!globalBest || sess.bestLapMs < globalBest) globalBest = sess.bestLapMs;
           } else {
             sess.sessionAvgMs = 0;
             sess.bestLapMs = 0;
           }
         });
-        if (globalBest > 0) globalEntry.bestLapMs = globalBest;
+        if (globalEntry.officialBestLapMs && globalEntry.officialBestLapMs > 0) {
+          globalEntry.bestLapMs = globalEntry.officialBestLapMs;
+        } else if (globalBest > 0) {
+          globalEntry.bestLapMs = globalBest;
+        }
       }
 
       processRawApexPayload(dataStr) {
@@ -936,8 +956,11 @@
       applyColumnValue(entry, colSuffix, value) {
         if (!value || !colSuffix) return false;
         
-        // Explicitly ignore sector columns (c6, c7, c8) and gap/interval columns (c11, c12)
-        if (colSuffix === 'c6' || colSuffix === 'c7' || colSuffix === 'c8' || 
+        // Explicitly ignore sector columns, gap/interval columns, and position columns
+        if (colSuffix === this.columnMap.gap || colSuffix === this.columnMap.int ||
+            colSuffix === this.columnMap.s1 || colSuffix === this.columnMap.s2 || colSuffix === this.columnMap.s3 ||
+            colSuffix === 'c1' || colSuffix === 'c2' || colSuffix === 'c3' ||
+            colSuffix === 'c6' || colSuffix === 'c7' || colSuffix === 'c8' || 
             colSuffix === 'c11' || colSuffix === 'c12') {
           return false;
         }
