@@ -510,15 +510,10 @@
           this.acquireWakeLock();
           this.playBackgroundAudio();
           
-          if (this.isSessionFinishedOnTrack) {
-            this.isWaitingForNewSession = true;
-            const statusMsg = '⏳ ESPERANDO A QUE EMPIECE UNA NUEVA SESIÓN (SESIÓN ANTERIOR FINALIZADA)';
-            this.broadcastState(statusMsg);
-          } else {
-            this.isWaitingForNewSession = false;
-            const statusMsg = '🔴 REGISTRANDO DATOS EN VIVO...';
-            this.broadcastState(statusMsg);
-          }
+          // Reset waiting flag so live karts populate on screen immediately
+          this.isWaitingForNewSession = false;
+          const statusMsg = '🔴 REGISTRANDO DATOS EN VIVO...';
+          this.broadcastState(statusMsg);
           
           this.connectWebSocket();
         } else {
@@ -661,8 +656,6 @@
       // Continuously keeps HTTP polling active as fallback
 
       mergeRowToGlobal(rowId) {
-        if (this.isWaitingForNewSession) return; // Do not ingest data from old session
-
         const row = this.sessionRows.get(rowId);
         if (!row || !row.kartNumber || row.kartNumber === '' || row.kartNumber === '0') return;
 
