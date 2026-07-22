@@ -708,8 +708,13 @@
           }
         }
 
+        // Track official total laps count from c13 (Vueltas cell)
+        if (row.totalLaps > 0) {
+          activeSession.officialTotalLaps = Math.max(activeSession.officialTotalLaps || 0, row.totalLaps);
+        }
+
         // Calculate total laps recorded across all sessions
-        const totalLapsCountAllSess = globalEntry.sessions.reduce((sum, s) => sum + s.lapsMs.length, 0);
+        const totalLapsCountAllSess = globalEntry.sessions.reduce((sum, s) => sum + (s.lapsMs ? s.lapsMs.length : 0), 0);
 
         // INITIAL SEEDING: If this kart has 0 laps recorded across all sessions
         if (totalLapsCountAllSess === 0) {
@@ -1028,7 +1033,11 @@
           if (validSessions.length > 0) {
             const sumSessionAvgs = validSessions.reduce((sum, s) => sum + s.sessionAvgMs, 0);
             overallAvgMs = Math.round(sumSessionAvgs / validSessions.length);
-            totalLapsAllSessions = sessions.reduce((sum, s) => sum + s.lapsMs.length, 0);
+            totalLapsAllSessions = sessions.reduce((sum, s) => {
+              const lapsCell = s.officialTotalLaps || 0;
+              const lapsArray = s.lapsMs ? s.lapsMs.length : 0;
+              return sum + Math.max(lapsCell, lapsArray);
+            }, 0);
           }
 
           if (overallAvgMs > 0 || entry.bestLapMs > 0) {
