@@ -615,8 +615,19 @@
             continue;
           }
 
-          // Track session status - CONTINUOUS RECORDING (does not auto-stop)
+          // Track session status - CONTINUOUS RECORDING (triggers notice without pausing)
           if (cellId === 'dyn1' || cellId === 'track') {
+            if (valueType === 'count') continue;
+            const statusLower = value.toLowerCase();
+            if (statusLower && (
+              statusLower.includes('chequered') || 
+              statusLower.includes('cuadros') || 
+              statusLower.includes('bandera') ||
+              statusLower.includes('finish') ||
+              statusLower.includes('finaliz')
+            )) {
+              this.triggerSessionNotice(`BANDERA A CUADROS (${value})`);
+            }
             continue;
           }
 
@@ -766,9 +777,17 @@
         return false;
       }
 
+      triggerSessionNotice(reason) {
+        if (!this.isRecording) return;
+        this.saveToLocalStorage();
+        console.log(`[Apex Client] Checkered flag notice: ${reason}`);
+        if (this.onSessionFinishedAlert) {
+          this.onSessionFinishedAlert(reason);
+        }
+      }
+
       triggerSessionEnd(reason) {
-        // Continuous mode: log notice without stopping recording
-        console.log(`[Apex Client] Session notice: ${reason}`);
+        this.triggerSessionNotice(reason);
       }
 
       calculateAverageClassification() {
@@ -1137,19 +1156,19 @@
           <div className="bg-zinc-950 border-2 border-race-purple rounded-2xl w-full max-w-sm p-4 text-center space-y-4 shadow-[0_0_30px_rgba(217,70,239,0.5)]">
             <div className="text-3xl">🏁</div>
             <h3 className="text-sm font-black text-race-purple uppercase tracking-wider text-glow-purple">
-              ¡Sesión Finalizada!
+              ¡BANDERA A CUADROS DETECTADA!
             </h3>
             <p className="text-[11px] text-zinc-300 leading-relaxed">
-              El programa ha detectado el final de la tanda. La captura se ha pausado y los promedios finales se han congelado correctamente en la pantalla.
+              Ha finalizado una tanda en la pista. <strong className="text-race-purple">El programa SIGUE GRABANDO en vivo</strong> sin detenerse ni pausarse.
             </p>
-            <div className="bg-black p-2 border border-zinc-900 rounded-xl text-[10px] text-zinc-400">
-              💡 Pulsa <strong className="text-white">"REINICIAR"</strong> para borrar la parrilla antes de arrancar la siguiente manga.
+            <div className="bg-black p-2.5 border border-zinc-900 rounded-xl text-[10px] text-zinc-400">
+              💡 Tus promedios y karts se mantendrán acumulados continuamente para la siguiente manga.
             </div>
             <button
               onClick={onClose}
               className="w-full bg-race-purple text-black font-black py-2.5 rounded-xl text-xs transition-all active:scale-95 shadow-[0_0_12px_rgba(217,70,239,0.4)]"
             >
-              ENTENDIDO
+              ENTENDIDO (SEGUIR GRABANDO)
             </button>
           </div>
         </div>
