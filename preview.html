@@ -247,6 +247,20 @@
         this.lastLapTimestamp = Date.now();
         this.inactivityCheckInterval = null;
 
+        // CONNECTION DIAGNOSTICS
+        this.wsStatus = 'DESCONECTADO';
+        this.httpStatus = 'DESCONECTADO';
+        this.wsMessagesReceived = 0;
+        this.httpMessagesReceived = 0;
+        this.totalPayloadsProcessed = 0;
+        this.lastError = '';
+        this.activeProxyIndex = 0;
+        this.corsProxies = [
+          (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+          (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+          (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+        ];
+
         // Background Audio Keep-alive loop
         this.bgAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
         this.bgAudio.loop = true;
@@ -431,64 +445,102 @@
           const wsPort = this.circuit.configPort + 3;
           const wsUrl = `wss://${this.configHost}:${wsPort}/`;
           
-          console.log(`[WebSocket] Connecting to: ${wsUrl}`);
+          console.log(`[WS] Connecting to: ${wsUrl}`);
+          this.wsStatus = 'CONECTANDO...';
           this.wsSocket = new WebSocket(wsUrl);
           
           this.wsSocket.onopen = () => {
-            console.log('[WebSocket] Connected successfully!');
-            if (this.isRecording) {
-              this.broadcastState('🔴 TELEMETRÍA REAL EN VIVO (WS)');
-            }
+            console.log('[WS] CONNECTED!');
+            this.wsStatus = 'CONECTADO';
+            this.broadcastState(this.getStatusLine());
           };
 
           this.wsSocket.onmessage = (event) => {
+            this.wsMessagesReceived++;
             if (!this.isRecording) return;
+            console.log(`[WS] MSG #${this.wsMessagesReceived} len=${event.data.length}`);
             this.processRawApexPayload(event.data);
           };
 
-          this.wsSocket.onclose = () => {
+          this.wsSocket.onclose = (ev) => {
+            console.log(`[WS] Closed: code=${ev.code} reason=${ev.reason}`);
+            this.wsStatus = `CERRADO (${ev.code})`;
+            this.broadcastState(this.getStatusLine());
             if (this.isRecording) {
               setTimeout(() => this.connectWebSocket(), 3000);
             }
           };
 
           this.wsSocket.onerror = (err) => {
-            console.log('[WebSocket] Connection error:', err);
+            console.log('[WS] Error:', err);
+            this.wsStatus = 'ERROR';
+            this.lastError = 'WebSocket connection failed';
+            this.broadcastState(this.getStatusLine());
           };
-        } catch(e) {}
+        } catch(e) {
+          this.wsStatus = 'EXCEPCION';
+          this.lastError = String(e);
+        }
+      }
+
+      getStatusLine() {
+        const karts = this.globalKarts.size;
+        const totalLaps = Array.from(this.globalKarts.values()).reduce((sum, k) => sum + k.lapsMs.length, 0);
+        if (this.isRecording) {
+          return `🔴 REC | WS:${this.wsStatus} (${this.wsMessagesReceived}) | HTTP:(${this.httpMessagesReceived}) | Karts:${karts} Vueltas:${totalLaps}`;
+        }
+        return '⏸️ CAPTURA EN PAUSA';
       }
 
       startHttpPollingFallback() {
         this.pollInterval = setInterval(async () => {
           if (!this.isRecording) return;
 
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2500);
+          const apiPort = this.circuit.configPort + 4;
+          const targetUrl = `https://${this.configHost}/live-timing/commonv2/functions/live_ajax.php?version=1.0.0&init=${this.pollInit}&index=${this.pollIndex}&port=${apiPort}&counter=${this.pollCounter}&duration=100&id=${this.randomSessionId}&ignored=0`;
 
-            const apiPort = this.circuit.configPort + 4;
-            const targetUrl = `https://${this.configHost}/live-timing/commonv2/functions/live_ajax.php?version=1.0.0&init=${this.pollInit}&index=${this.pollIndex}&port=${apiPort}&counter=${this.pollCounter}&duration=100&id=${this.randomSessionId}&ignored=0`;
-            const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
+          // Try each proxy until one works
+          for (let pi = 0; pi < this.corsProxies.length; pi++) {
+            const proxyIdx = (this.activeProxyIndex + pi) % this.corsProxies.length;
+            const proxyUrl = this.corsProxies[proxyIdx](targetUrl);
             
-            const response = await fetch(proxyUrl, { signal: controller.signal });
-            clearTimeout(timeoutId);
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-            if (!response.ok) throw new Error('CORS Proxy failed');
-            const dataText = await response.text();
+              const response = await fetch(proxyUrl, { signal: controller.signal });
+              clearTimeout(timeoutId);
 
-            this.pollCounter += 1;
-            
-            if (dataText && dataText !== 'error' && !dataText.includes('Service Unavailable')) {
-              const parts = dataText.split('@');
-              if (parts.length >= 3) {
-                this.pollInit = parseInt(parts[0], 10) || this.pollInit;
-                this.pollIndex = parseInt(parts[1], 10) || this.pollIndex;
-                
-                const payload = parts[2];
-                this.processRawApexPayload(payload);
+              if (!response.ok) {
+                console.log(`[HTTP] Proxy #${proxyIdx} returned ${response.status}`);
+                continue;
               }
+              const dataText = await response.text();
+
+              this.pollCounter += 1;
+              
+              if (dataText && dataText !== 'error' && !dataText.includes('Service Unavailable') && !dataText.includes('<!DOCTYPE')) {
+                const atIdx1 = dataText.indexOf('@');
+                const atIdx2 = dataText.indexOf('@', atIdx1 + 1);
+                if (atIdx1 > 0 && atIdx2 > atIdx1) {
+                  this.pollInit = parseInt(dataText.substring(0, atIdx1), 10) || this.pollInit;
+                  this.pollIndex = parseInt(dataText.substring(atIdx1 + 1, atIdx2), 10) || this.pollIndex;
+                  
+                  const payload = dataText.substring(atIdx2 + 1);
+                  this.httpMessagesReceived++;
+                  this.httpStatus = `OK (proxy #${proxyIdx})`;
+                  this.activeProxyIndex = proxyIdx;
+                  console.log(`[HTTP] Poll OK via proxy #${proxyIdx}, payload len=${payload.length}`);
+                  this.processRawApexPayload(payload);
+                }
+                break; // Success, stop trying proxies
+              }
+            } catch(err) {
+              console.log(`[HTTP] Proxy #${proxyIdx} failed: ${err.name}`);
+              this.httpStatus = `FALLO proxy #${proxyIdx}`;
+              // Try next proxy
             }
-          } catch(err) {}
+          }
         }, 3000);
       }
 
@@ -546,112 +598,89 @@
 
       processRawApexPayload(dataStr) {
         if (!this.isRecording || !dataStr || dataStr.trim() === '') return;
+        this.totalPayloadsProcessed++;
 
         const lines = dataStr.split('\n');
         let hasUpdates = false;
 
-        lines.forEach(line => {
-          const parts = line.split('|');
-          if (parts.length >= 3) {
-            const cellId = parts[0];
-            const value = parts[2];
+        for (let li = 0; li < lines.length; li++) {
+          const line = lines[li].trim();
+          if (!line) continue;
+          
+          const pipeIdx = line.indexOf('|');
+          if (pipeIdx < 0) continue;
+          
+          const cellId = line.substring(0, pipeIdx);
+          const rest = line.substring(pipeIdx + 1);
+          const pipeIdx2 = rest.indexOf('|');
+          const valueType = pipeIdx2 >= 0 ? rest.substring(0, pipeIdx2) : rest;
+          const value = pipeIdx2 >= 0 ? rest.substring(pipeIdx2 + 1) : '';
 
-            if (cellId === 'init' || cellId === 'grid') {
-              this.sessionRows.clear();
-              console.log('[Apex Client] New Session / Init packet detected.');
+          // Init resets session rows (new session starting)
+          if (cellId === 'init') {
+            this.sessionRows.clear();
+            console.log('[Parser] INIT received - session rows cleared');
+            continue;
+          }
+
+          // Skip non-data lines
+          if (cellId === 'css' || cellId === 'best' || cellId === 'effects' || 
+              cellId === 'comments' || cellId === 'msg' || cellId === 'light' ||
+              cellId === 'title1' || cellId === 'title2' || cellId === 'wth1' || 
+              cellId === 'wth2' || cellId === 'wth3' || cellId === 'com') {
+            continue;
+          }
+
+          // Track session status
+          if (cellId === 'dyn1' || cellId === 'track') {
+            // dyn1 has format dyn1|count|NUMBER - just a counter, skip
+            if (valueType === 'count') continue;
+            // track has static circuit name - skip unless it signals end
+            const statusLower = value.toLowerCase();
+            if (statusLower && (
+              statusLower.includes('chequered') || 
+              statusLower.includes('cuadros') || 
+              statusLower.includes('bandera') ||
+              statusLower.includes('finaliz')
+            )) {
+              this.triggerSessionEnd(`BANDERA A CUADROS (${value})`);
+              return;
             }
+            continue;
+          }
 
-            if (cellId === 'dyn1' || cellId === 'track') {
-              const statusText = value.trim();
-              if (statusText) {
-                const lower = statusText.toLowerCase();
-                if (
-                  lower.includes('chequered') || 
-                  lower.includes('cuadros') || 
-                  lower.includes('finish') || 
-                  lower.includes('finaliz') || 
-                  lower.includes('termina') || 
-                  lower.includes('comple') || 
-                  lower.includes('end')
-                ) {
-                  this.triggerSessionEnd(`BANDERA A CUADROS (${statusText})`);
-                  return;
-                }
-              }
-            }
-
-            if (cellId === 'grid') {
-              try {
-                const tempDiv = document.createElement('div');
-                tempDiv.innerHTML = parts.slice(2).join('|');
-                
-                const headRow = tempDiv.querySelector('tr[data-id="r0"]') || tempDiv.querySelector('tr.head');
-                if (headRow) {
-                  const headerCells = headRow.querySelectorAll('td');
-                  headerCells.forEach(cell => {
-                    const colId = cell.getAttribute('data-id'); 
-                    const colType = cell.getAttribute('data-type'); 
-                    if (colId && colType) {
-                      if (colType === 'no') this.columnMap.no = colId;
-                      if (colType === 'dr') this.columnMap.dr = colId;
-                      if (colType === 'llp') this.columnMap.llp = colId;
-                      if (colType === 'blp') this.columnMap.blp = colId;
-                    }
-                  });
-                  console.log('[Apex Client] Column mappings dynamically detected:', this.columnMap);
-                }
-
-                const rows = tempDiv.querySelectorAll('tr');
-                rows.forEach(row => {
-                  const rId = row.getAttribute('data-id');
-                  if (rId && rId.startsWith('r') && rId !== 'r0') {
-                    if (!this.sessionRows.has(rId)) {
-                      this.sessionRows.set(rId, {
-                        kartNumber: '',
-                        drivers: new Set(),
-                        lapsMs: [],
-                        bestLapMs: 0,
-                        mergedLapsCount: 0
-                      });
-                    }
-                    const entry = this.sessionRows.get(rId);
-                    
-                    const elementsWithId = row.querySelectorAll('[data-id]');
-                    elementsWithId.forEach(el => {
-                      const cId = el.getAttribute('data-id'); 
-                      const colPart = cId.replace(/^r\d+/, ''); 
-                      const val = el.textContent.trim();
-                      
-                      if (colPart === this.columnMap.no || colPart === 'c4' || colPart === 'no') {
-                        entry.kartNumber = val;
-                      } else if (colPart === this.columnMap.dr || colPart === 'c5' || colPart === 'dr') {
-                        const driverName = val.replace(/&nbsp;/g, ' ').trim();
-                        if (driverName && !driverName.includes('Piloto') && driverName !== '') {
-                          entry.drivers.add(driverName);
-                        }
-                      } else if (colPart === this.columnMap.blp || colPart === 'c10' || colPart === 'blp') {
-                        const bestMs = parseTimeToMs(val);
-                        if (bestMs > 0) entry.bestLapMs = bestMs;
-                      } else if (colPart === this.columnMap.llp || colPart === 'c9' || colPart === 'llp') {
-                        const lastMs = parseTimeToMs(val);
-                        if (lastMs > 0) entry.lapsMs.push(lastMs);
-                      }
-                    });
-                    this.mergeRowToGlobal(rId);
+          // GRID HTML - full table with all current kart data
+          if (cellId === 'grid') {
+            try {
+              const gridHtml = rest.substring(pipeIdx2 + 1); // everything after grid||
+              const tempDiv = document.createElement('div');
+              tempDiv.innerHTML = '<table>' + gridHtml + '</table>';
+              
+              // Parse header row for column mapping
+              const headRow = tempDiv.querySelector('tr[data-id="r0"]') || tempDiv.querySelector('tr.head');
+              if (headRow) {
+                headRow.querySelectorAll('td[data-type]').forEach(cell => {
+                  const colId = cell.getAttribute('data-id'); 
+                  const colType = cell.getAttribute('data-type'); 
+                  if (colId && colType) {
+                    if (colType === 'no') this.columnMap.no = colId;
+                    if (colType === 'dr') this.columnMap.dr = colId;
+                    if (colType === 'llp') this.columnMap.llp = colId;
+                    if (colType === 'blp') this.columnMap.blp = colId;
                   }
                 });
-                hasUpdates = true;
-              } catch(err) {}
-            }
+                console.log('[Parser] Column map:', JSON.stringify(this.columnMap));
+              }
 
-            if (cellId.startsWith('r')) {
-              const match = cellId.match(/^(r\d+)(.*)$/);
-              if (match) {
-                const rowId = match[1];
-                const suffix = match[2]; 
-
-                if (!this.sessionRows.has(rowId)) {
-                  this.sessionRows.set(rowId, {
+              // Parse data rows
+              const rows = tempDiv.querySelectorAll('tr[data-id]');
+              let gridKartCount = 0;
+              rows.forEach(row => {
+                const rId = row.getAttribute('data-id');
+                if (!rId || rId === 'r0') return;
+                
+                if (!this.sessionRows.has(rId)) {
+                  this.sessionRows.set(rId, {
                     kartNumber: '',
                     drivers: new Set(),
                     lapsMs: [],
@@ -659,43 +688,111 @@
                     mergedLapsCount: 0
                   });
                 }
-
-                const entry = this.sessionRows.get(rowId);
-                hasUpdates = true;
-
-                if (suffix === this.columnMap.dr || suffix === 'c5' || suffix === 'dr') {
-                  const driverName = value.replace(/&nbsp;/g, ' ').trim();
-                  if (driverName && !driverName.includes('Piloto') && driverName !== '') {
-                    entry.drivers.add(driverName);
-                  }
-                } else if (suffix === this.columnMap.no || suffix === 'c4' || suffix === 'no') {
-                  entry.kartNumber = value.trim();
-                } else if (suffix === this.columnMap.blp || suffix === 'c10' || suffix === 'blp') {
-                  const bestMs = parseTimeToMs(value);
-                  if (bestMs > 0) {
-                    entry.bestLapMs = bestMs;
-                  }
-                } else if (suffix === this.columnMap.llp || suffix === 'c9' || suffix === 'llp') {
-                  const lastMs = parseTimeToMs(value);
-                  if (lastMs > 0) {
-                    entry.lapsMs.push(lastMs);
-                    this.lastLapTimestamp = Date.now();
-                    if (!entry.bestLapMs || lastMs < entry.bestLapMs) {
-                      entry.bestLapMs = lastMs;
-                    }
-                  }
+                const entry = this.sessionRows.get(rId);
+                
+                // Find ALL elements with data-id inside this row (including nested divs/p)
+                row.querySelectorAll('[data-id]').forEach(el => {
+                  const dataId = el.getAttribute('data-id'); 
+                  if (!dataId || !dataId.startsWith(rId)) return;
+                  
+                  const colSuffix = dataId.substring(rId.length); // e.g. 'c4', 'c5', 'c9', 'c10'
+                  const val = el.textContent.trim();
+                  if (!val) return;
+                  
+                  this.applyColumnValue(entry, colSuffix, val);
+                });
+                
+                if (entry.kartNumber) {
+                  gridKartCount++;
+                  this.mergeRowToGlobal(rId);
                 }
+              });
+              console.log(`[Parser] GRID parsed: ${gridKartCount} karts found`);
+              hasUpdates = gridKartCount > 0;
+            } catch(err) {
+              console.error('[Parser] Grid parse error:', err);
+            }
+            continue;
+          }
 
-                this.mergeRowToGlobal(rowId);
-              }
+          // DELTA UPDATES - individual cell changes like r11c9|tn|1:48.923
+          if (cellId.startsWith('r') && /^r\d+/.test(cellId)) {
+            const match = cellId.match(/^(r\d+)(.+)$/);
+            if (!match) continue;
+            
+            const rowId = match[1];
+            const suffix = match[2]; // e.g. 'c4', 'c5', 'c9', 'c10', '*i1', '*i2', '*', '*in'
+
+            // Skip internal timer/sort fields
+            if (suffix.startsWith('*')) continue;
+
+            if (!this.sessionRows.has(rowId)) {
+              this.sessionRows.set(rowId, {
+                kartNumber: '',
+                drivers: new Set(),
+                lapsMs: [],
+                bestLapMs: 0,
+                mergedLapsCount: 0
+              });
+            }
+
+            const entry = this.sessionRows.get(rowId);
+            
+            if (this.applyColumnValue(entry, suffix, value)) {
+              hasUpdates = true;
+              this.mergeRowToGlobal(rowId);
             }
           }
-        });
+        }
 
         if (hasUpdates) {
           this.saveToLocalStorage();
-          this.broadcastState('🔴 TELEMETRÍA REAL EN VIVO (APEX)');
+          this.broadcastState(this.getStatusLine());
         }
+      }
+
+      // Apply a column value to a session row entry. Returns true if meaningful data was applied.
+      applyColumnValue(entry, colSuffix, value) {
+        if (!value || !colSuffix) return false;
+        
+        // Kart number
+        if (colSuffix === this.columnMap.no || colSuffix === 'c4') {
+          const kartNum = value.replace(/[^\d]/g, '');
+          if (kartNum) {
+            entry.kartNumber = kartNum;
+            return true;
+          }
+        }
+        // Driver name
+        else if (colSuffix === this.columnMap.dr || colSuffix === 'c5') {
+          const driverName = value.replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+          if (driverName && driverName.length > 1 && !driverName.includes('Piloto') && driverName !== 'Piloto') {
+            entry.drivers.add(driverName);
+            return true;
+          }
+        }
+        // Last lap time
+        else if (colSuffix === this.columnMap.llp || colSuffix === 'c9') {
+          const lastMs = parseTimeToMs(value);
+          if (lastMs > 0) {
+            entry.lapsMs.push(lastMs);
+            this.lastLapTimestamp = Date.now();
+            if (!entry.bestLapMs || lastMs < entry.bestLapMs) {
+              entry.bestLapMs = lastMs;
+            }
+            console.log(`[Parser] LAP: kart=${entry.kartNumber} time=${value} (${lastMs}ms)`);
+            return true;
+          }
+        }
+        // Best lap time
+        else if (colSuffix === this.columnMap.blp || colSuffix === 'c10') {
+          const bestMs = parseTimeToMs(value);
+          if (bestMs > 0) {
+            entry.bestLapMs = bestMs;
+            return true;
+          }
+        }
+        return false;
       }
 
       triggerSessionEnd(reason) {
@@ -836,7 +933,7 @@
     }
 
     // Main Kart Classifier Component
-    function KartClassifier({ classifiedKarts, selectedCircuit, isRecording }) {
+    function KartClassifier({ classifiedKarts, selectedCircuit, isRecording, statusText }) {
       const [selectedKart, setSelectedKart] = useState(null);
 
       const bestOverallAvgMs = classifiedKarts.length > 0 ? classifiedKarts[0].avgLapMs : 0;
@@ -844,19 +941,26 @@
       return (
         <div className="flex-1 flex flex-col bg-black p-2.5 sm:p-3 space-y-2.5 sm:space-y-3 overflow-y-auto custom-scrollbar select-none font-mono">
           {/* Status Banner */}
-          <div className="bg-gradient-to-r from-zinc-950 via-purple-950/40 to-zinc-950 border-2 border-race-purple rounded-2xl p-2.5 sm:p-3 shadow-[0_0_20px_rgba(217,70,239,0.3)] shrink-0 flex items-center justify-between">
-            <div className="min-w-0 pr-2">
-              <span className="text-[9px] sm:text-[10px] text-race-purple font-extrabold uppercase tracking-wider flex items-center gap-1 truncate">
-                <span>🛡️ DATOS DE TIMING REAL EN VIVO</span>
-              </span>
-              <h2 className="text-[11px] sm:text-xs font-black text-white truncate">
-                CLASIFICACIÓN POR MEDIA ({selectedCircuit.shortName})
-              </h2>
-            </div>
+          <div className="bg-gradient-to-r from-zinc-950 via-purple-950/40 to-zinc-950 border-2 border-race-purple rounded-2xl p-2.5 sm:p-3 shadow-[0_0_20px_rgba(217,70,239,0.3)] shrink-0">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0 pr-2">
+                <span className="text-[9px] sm:text-[10px] text-race-purple font-extrabold uppercase tracking-wider flex items-center gap-1 truncate">
+                  <span>🛡️ DATOS DE TIMING REAL EN VIVO</span>
+                </span>
+                <h2 className="text-[11px] sm:text-xs font-black text-white truncate">
+                  CLASIFICACIÓN POR MEDIA ({selectedCircuit.shortName})
+                </h2>
+              </div>
 
-            <div className="px-2.5 py-1 rounded-xl bg-purple-950 border border-race-purple text-race-purple font-extrabold text-[9px] sm:text-[10px] shrink-0">
-              {isRecording ? '🔴 VIVO' : '⏸️ PAUSA'}
+              <div className="px-2.5 py-1 rounded-xl bg-purple-950 border border-race-purple text-race-purple font-extrabold text-[9px] sm:text-[10px] shrink-0">
+                {isRecording ? '🔴 VIVO' : '⏸️ PAUSA'}
+              </div>
             </div>
+            {statusText && (
+              <div className="mt-1.5 pt-1.5 border-t border-zinc-900 text-[8px] sm:text-[9px] text-zinc-400 font-mono font-bold truncate">
+                {statusText}
+              </div>
+            )}
           </div>
 
           {classifiedKarts.length === 0 ? (
@@ -1159,6 +1263,7 @@
               classifiedKarts={classifiedKarts}
               selectedCircuit={selectedCircuit}
               isRecording={isRecording}
+              statusText={statusText}
             />
           </main>
 
