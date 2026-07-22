@@ -872,10 +872,9 @@
         this.sessionRows.clear();
         this.globalKarts.clear();
         
-        // Remove circuit storage and force empty state in localStorage
+        // Remove circuit-specific storage and force empty state ONLY for this circuit
         try {
           localStorage.removeItem(keyKarts);
-          localStorage.removeItem('apex_karts_db');
           localStorage.setItem(keyKarts, JSON.stringify({}));
         } catch(e) {}
 
@@ -888,8 +887,8 @@
         this.totalPayloadsProcessed = 0;
         this.lastLapTimestamp = Date.now();
 
-        console.log(`[Apex Client] COMPLETE DATA RESET FOR: ${this.circuit.name}`);
-        this.broadcastState(`🗑️ DATOS BORRADOS CORRECTAMENTE. LISTO PARA RECOPILAR DATOS NUEVOS.`);
+        console.log(`[Apex Client] COMPLETE DATA RESET ONLY FOR: ${this.circuit.name}`);
+        this.broadcastState(`🗑️ DATOS BORRADOS ÚNICAMENTE DE ${this.circuit.shortName}. OTROS CIRCUITOS INTACTOS.`);
       }
     }
 
@@ -1276,7 +1275,7 @@
       };
 
       const handleResetCircuit = () => {
-        if (window.confirm(`¿Estás seguro de REINICIAR los datos guardados ÚNICAMENTE de ${selectedCircuit.name}?`)) {
+        if (window.confirm(`¿Estás seguro de BORRAR TODOS los datos acumulados ÚNICAMENTE del circuito "${selectedCircuit.shortName}"?\n\n(Los demás circuitos conservarán sus datos intactos).`)) {
           if (engineRef.current) {
             engineRef.current.resetCurrentCircuitData();
           }
