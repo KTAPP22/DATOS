@@ -306,7 +306,6 @@
         // INSTANT NON-BLOCKING WEBSOCKET CONNECT
         this.connectWebSocket();
         this.startHttpPollingFallback();
-        this.startInactivityChecker();
 
         // Non-blocking background host discovery
         this.discoverCorrectHost();
@@ -356,7 +355,6 @@
 
         if (this.wsSocket) this.wsSocket.close();
         if (this.pollInterval) clearInterval(this.pollInterval);
-        if (this.inactivityCheckInterval) clearInterval(this.inactivityCheckInterval);
       }
 
       handleBeforeUnload() {
@@ -544,21 +542,7 @@
         }, 3000);
       }
 
-      startInactivityChecker() {
-        this.inactivityCheckInterval = setInterval(() => {
-          if (!this.isRecording) return;
-          
-          let totalLapsRegistered = 0;
-          this.globalKarts.forEach(k => totalLapsRegistered += k.lapsMs.length);
-
-          if (totalLapsRegistered > 2) {
-            const idleTimeSeconds = (Date.now() - this.lastLapTimestamp) / 1000;
-            if (idleTimeSeconds > 90) {
-              this.triggerSessionEnd('INACTIVIDAD (90s sin vueltas)');
-            }
-          }
-        }, 10000);
-      }
+      // Continuously keeps HTTP polling active as fallback
 
       mergeRowToGlobal(rowId) {
         const row = this.sessionRows.get(rowId);
@@ -631,21 +615,8 @@
             continue;
           }
 
-          // Track session status
+          // Track session status - CONTINUOUS RECORDING (does not auto-stop)
           if (cellId === 'dyn1' || cellId === 'track') {
-            // dyn1 has format dyn1|count|NUMBER - just a counter, skip
-            if (valueType === 'count') continue;
-            // track has static circuit name - skip unless it signals end
-            const statusLower = value.toLowerCase();
-            if (statusLower && (
-              statusLower.includes('chequered') || 
-              statusLower.includes('cuadros') || 
-              statusLower.includes('bandera') ||
-              statusLower.includes('finaliz')
-            )) {
-              this.triggerSessionEnd(`BANDERA A CUADROS (${value})`);
-              return;
-            }
             continue;
           }
 
@@ -796,19 +767,8 @@
       }
 
       triggerSessionEnd(reason) {
-        if (!this.isRecording) return;
-        
-        this.saveToLocalStorage();
-        
-        this.isRecording = false;
-        localStorage.setItem('apex_rec_active', 'false');
-        this.releaseWakeLock();
-        this.stopBackgroundAudio();
-        
-        this.broadcastState('🏁 SESIÓN FINALIZADA (CAP. PAUSADA)');
-        if (this.onSessionFinishedAlert) {
-          this.onSessionFinishedAlert();
-        }
+        // Continuous mode: log notice without stopping recording
+        console.log(`[Apex Client] Session notice: ${reason}`);
       }
 
       calculateAverageClassification() {
