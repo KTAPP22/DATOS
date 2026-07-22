@@ -256,7 +256,7 @@
         this.pollIndex = 0;
         
         const savedRecState = localStorage.getItem('apex_rec_active');
-        this.isRecording = savedRecState === 'true'; 
+        this.isRecording = savedRecState === null ? true : savedRecState === 'true'; 
         
         // Dual Registry Layers
         this.globalKarts = new Map(); 
@@ -278,7 +278,6 @@
         this.lastError = '';
         this.activeProxyIndex = 0;
         this.corsProxies = [
-          (url) => url, // Try direct fetch first
           (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
           (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
           (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
@@ -1207,15 +1206,26 @@
 
           {classifiedKarts.length === 0 ? (
             <div className="flex-1 border-2 border-dashed border-zinc-800 rounded-2xl p-4 sm:p-6 flex flex-col items-center justify-center text-center">
-              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full border-4 border-race-purple border-t-transparent animate-spin mb-3"></div>
-              <h3 className="text-xs sm:text-sm font-bold text-white uppercase">
-                {isRecording ? 'CONECTANDO A TELEMETRÍA EN VIVO...' : 'CAPTURA EN PAUSA'}
+              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-4 border-race-purple border-t-transparent animate-spin mb-3"></div>
+              <h3 className="text-xs sm:text-sm font-black text-white uppercase tracking-wider">
+                {isRecording ? 'CONECTANDO Y RECOPILANDO DATOS EN VIVO...' : 'CAPTURA EN PAUSA'}
               </h3>
               <p className="text-[11px] sm:text-xs text-zinc-400 mt-2 max-w-xs leading-relaxed">
                 {isRecording 
-                  ? `Escuchando el cronometraje de ${selectedCircuit.name}. En cuanto salgan karts a pista y registren pasos por meta, aparecerán aquí.`
-                  : "Pulsa el botón 'REC: OFF' en la barra superior para activar la captura de datos en vivo de este circuito."}
+                  ? `Escuchando la telemetría oficial de ${selectedCircuit.name}. En cuanto los karts estén en pista, aparecerán aquí en tiempo real.`
+                  : "Haz clic en el botón de abajo o en 'REC: OFF' para iniciar la captura en directo."}
               </p>
+              {!isRecording && (
+                <button
+                  onClick={() => {
+                    const recBtn = document.querySelector('button');
+                    if (recBtn) recBtn.click();
+                  }}
+                  className="mt-4 bg-race-purple text-black font-black text-xs px-4 py-2.5 rounded-xl shadow-[0_0_20px_rgba(217,70,239,0.5)] active:scale-95 transition-all"
+                >
+                  🔴 INICIAR CAPTURA EN VIVO AHORA
+                </button>
+              )}
             </div>
           ) : (
             <div className="space-y-2 sm:space-y-2.5">
@@ -1475,7 +1485,13 @@
         return CIRCUITS_LIST[0];
       });
       const [classifiedKarts, setClassifiedKarts] = useState([]);
-      const [isRecording, setIsRecording] = useState(false);
+      const [isRecording, setIsRecording] = useState(() => {
+        try {
+          const savedRecState = localStorage.getItem('apex_rec_active');
+          return savedRecState === null ? true : savedRecState === 'true';
+        } catch(e) {}
+        return true;
+      });
       const [statusText, setStatusText] = useState('⏸️ CAPTURA EN PAUSA (PULSA REC ON)');
       const [isLiveTimingOpen, setIsLiveTimingOpen] = useState(false);
       const [isConfigOpen, setIsConfigOpen] = useState(false);
