@@ -869,6 +869,14 @@
 
       resetCurrentCircuitData() {
         const keyKarts = `apex_karts_db_${this.circuit.id}`;
+        
+        // Pause recording so live stream packets don't immediately re-populate current track karts
+        this.isRecording = false;
+        localStorage.setItem('apex_rec_active', 'false');
+        this.releaseWakeLock();
+        this.stopBackgroundAudio();
+
+        // Wipe all memory structures for this circuit
         this.sessionRows.clear();
         this.globalKarts.clear();
         
@@ -888,7 +896,7 @@
         this.lastLapTimestamp = Date.now();
 
         console.log(`[Apex Client] COMPLETE DATA RESET ONLY FOR: ${this.circuit.name}`);
-        this.broadcastState(`🗑️ DATOS BORRADOS ÚNICAMENTE DE ${this.circuit.shortName}. OTROS CIRCUITOS INTACTOS.`);
+        this.broadcastState(`🗑️ DATOS BORRADOS COMPLETAMENTE. CAPTURA EN PAUSA (PULSA REC ON).`);
       }
     }
 
