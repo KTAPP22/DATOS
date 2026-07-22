@@ -872,9 +872,12 @@
         this.sessionRows.clear();
         this.globalKarts.clear();
         
-        // Remove circuit storage and any legacy keys
-        localStorage.removeItem(keyKarts);
-        localStorage.removeItem('apex_karts_db');
+        // Remove circuit storage and force empty state in localStorage
+        try {
+          localStorage.removeItem(keyKarts);
+          localStorage.removeItem('apex_karts_db');
+          localStorage.setItem(keyKarts, JSON.stringify({}));
+        } catch(e) {}
 
         // Reset sequence & message counters
         this.pollInit = 0;
