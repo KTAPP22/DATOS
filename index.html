@@ -1244,7 +1244,14 @@
 
     // Main App Root
     function App() {
-      const [selectedCircuit, setSelectedCircuit] = useState(CIRCUITS_LIST[0]);
+      const [selectedCircuit, setSelectedCircuit] = useState(() => {
+        try {
+          const savedId = localStorage.getItem('apex_selected_circuit_id');
+          const found = CIRCUITS_LIST.find(c => c.id === savedId);
+          if (found) return found;
+        } catch(e) {}
+        return CIRCUITS_LIST[0];
+      });
       const [classifiedKarts, setClassifiedKarts] = useState([]);
       const [isRecording, setIsRecording] = useState(false);
       const [statusText, setStatusText] = useState('⏸️ CAPTURA EN PAUSA (PULSA REC ON)');
@@ -1254,7 +1261,21 @@
 
       const engineRef = useRef(null);
 
+      const handleSelectCircuit = (circuit) => {
+        try {
+          localStorage.setItem('apex_selected_circuit_id', circuit.id);
+        } catch(e) {}
+        setSelectedCircuit(circuit);
+      };
+
       useEffect(() => {
+        // Immediately clear karts state when switching circuits so stale circuit data is never displayed
+        setClassifiedKarts([]);
+
+        if (engineRef.current) {
+          engineRef.current.stop();
+        }
+
         engineRef.current = new RealApexTimingClient(
           selectedCircuit,
           (data) => {
@@ -1294,7 +1315,7 @@
         <div className="h-full w-full bg-black text-white flex flex-col overflow-hidden relative font-mono text-xs">
           <Header
             selectedCircuit={selectedCircuit}
-            onSelectCircuit={setSelectedCircuit}
+            onSelectCircuit={handleSelectCircuit}
             totalKarts={classifiedKarts.length}
             statusText={statusText}
             isRecording={isRecording}
