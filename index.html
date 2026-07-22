@@ -1031,7 +1031,7 @@
                             </span>
                           </div>
                           <div className="text-[10px] sm:text-[11px] text-zinc-400 mt-0.5 truncate">
-                            👤 PILOTOS: <strong className="text-race-purple font-extrabold">{kart.drivers.length > 0 ? kart.drivers.join(', ') : 'Registrando en vivo...'}</strong>
+                            👤 PILOTOS: <strong className="text-race-purple font-extrabold">{kart.drivers.length > 0 ? `${kart.drivers.length} ${kart.drivers.length === 1 ? 'persona' : 'personas'}` : 'Registrando en vivo...'}</strong>
                           </div>
                         </div>
                       </div>
