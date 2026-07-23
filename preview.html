@@ -300,6 +300,7 @@
         this.isSessionFinishedOnTrack = false;
         this.isWaitingForNewSession = false;
         this.currentSessionId = 1;
+        this.apexSessionId = 0;
 
         this.handleBeforeUnload = this.handleBeforeUnload.bind(this);
         this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
@@ -341,8 +342,39 @@
             const parsed = JSON.parse(savedKarts);
             Object.keys(parsed).forEach(kart => {
               const rawSessions = parsed[kart].sessions || [];
-              const cleanSessions = rawSessions.map(sess => {
-                const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 45000 && l <= 600000);
+              
+              // Deduplicate any sessions that were duplicated for same driver/sessionId
+              const cleanSessionsMap = new Map();
+              rawSessions.forEach(s => {
+                const sKey = `${s.sessionId}_${s.driver || 'Piloto'}`;
+                if (!cleanSessionsMap.has(sKey)) {
+                  cleanSessionsMap.set(sKey, {
+                    sessionId: s.sessionId,
+                    driver: s.driver || 'Piloto',
+                    lapsMs: s.lapsMs ? [...s.lapsMs] : [],
+                    sessionAvgMs: s.sessionAvgMs || 0,
+                    bestLapMs: s.bestLapMs || 0,
+                    officialBestLapMs: s.officialBestLapMs || s.bestLapMs || 0,
+                    officialTotalLaps: s.officialTotalLaps || 0
+                  });
+                } else {
+                  const existing = cleanSessionsMap.get(sKey);
+                  (s.lapsMs || []).forEach(l => {
+                    if (typeof l === 'number' && l >= 35000 && l <= 600000 && !existing.lapsMs.includes(l)) {
+                      existing.lapsMs.push(l);
+                    }
+                  });
+                  if (s.officialBestLapMs > 0 && (!existing.officialBestLapMs || s.officialBestLapMs < existing.officialBestLapMs)) {
+                    existing.officialBestLapMs = s.officialBestLapMs;
+                  }
+                  if (s.officialTotalLaps > 0) {
+                    existing.officialTotalLaps = Math.max(existing.officialTotalLaps, s.officialTotalLaps);
+                  }
+                }
+              });
+
+              const cleanSessions = Array.from(cleanSessionsMap.values()).map(sess => {
+                const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
                 const sumMs = validLaps.reduce((a, b) => a + b, 0);
                 const sessionAvgMs = validLaps.length > 0 ? Math.round(sumMs / validLaps.length) : 0;
                 const calcBest = validLaps.length > 0 ? Math.min(...validLaps) : 0;
@@ -353,11 +385,12 @@
                   lapsMs: validLaps,
                   sessionAvgMs,
                   bestLapMs,
-                  officialBestLapMs: sess.officialBestLapMs || bestLapMs
+                  officialBestLapMs: sess.officialBestLapMs || bestLapMs,
+                  officialTotalLaps: sess.officialTotalLaps || 0
                 };
-              }).filter(sess => sess.lapsMs.length > 0 || sess.sessionAvgMs > 0 || sess.officialBestLapMs > 0);
+              });
 
-              let globalBest = parsed[kart].officialBestLapMs || 0;
+              let globalBest = 0;
               cleanSessions.forEach(s => {
                 if (s.bestLapMs > 0 && (!globalBest || s.bestLapMs < globalBest)) {
                   globalBest = s.bestLapMs;
@@ -638,7 +671,16 @@
                 const atIdx1 = dataText.indexOf('@');
                 const atIdx2 = dataText.indexOf('@', atIdx1 + 1);
                 if (atIdx1 > 0 && atIdx2 > atIdx1) {
-                  this.pollInit = parseInt(dataText.substring(0, atIdx1), 10) || this.pollInit;
+                  const newInit = parseInt(dataText.substring(0, atIdx1), 10);
+                  if (newInit > 0 && newInit !== this.apexSessionId) {
+                    if (this.apexSessionId > 0) {
+                      this.currentSessionId += 1;
+                      console.log(`[Apex Client] NEW TRACK SESSION DETECTED: Apex ID #${newInit}`);
+                    }
+                    this.apexSessionId = newInit;
+                  }
+                  
+                  this.pollInit = newInit || this.pollInit;
                   this.pollIndex = parseInt(dataText.substring(atIdx1 + 1, atIdx2), 10) || this.pollIndex;
                   
                   const payload = dataText.substring(atIdx2 + 1);
@@ -752,28 +794,32 @@
         let globalBest = 0;
         globalEntry.sessions.forEach(sess => {
           // Laps for session average MUST come strictly from c9 (Última vuelta / lastLapMs)
-          const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 45000 && l <= 600000);
+          const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
           sess.lapsMs = validLaps;
           if (validLaps.length > 0) {
             const sumMs = validLaps.reduce((a, b) => a + b, 0);
             sess.sessionAvgMs = Math.round(sumMs / validLaps.length);
             const calcBest = Math.min(...validLaps);
             sess.bestLapMs = (sess.officialBestLapMs && sess.officialBestLapMs > 0) ? sess.officialBestLapMs : calcBest;
-            if (!globalBest || sess.bestLapMs < globalBest) globalBest = sess.bestLapMs;
           } else if (sess.officialBestLapMs && sess.officialBestLapMs > 0) {
             sess.sessionAvgMs = 0;
             sess.bestLapMs = sess.officialBestLapMs;
-            if (!globalBest || sess.bestLapMs < globalBest) globalBest = sess.bestLapMs;
           } else {
             sess.sessionAvgMs = 0;
             sess.bestLapMs = 0;
           }
+
+          if (sess.bestLapMs > 0 && (!globalBest || sess.bestLapMs < globalBest)) {
+            globalBest = sess.bestLapMs;
+          }
         });
+
         if (globalEntry.officialBestLapMs && globalEntry.officialBestLapMs > 0) {
-          globalEntry.bestLapMs = globalEntry.officialBestLapMs;
-        } else if (globalBest > 0) {
-          globalEntry.bestLapMs = globalBest;
+          if (!globalBest || globalEntry.officialBestLapMs < globalBest) {
+            globalBest = globalEntry.officialBestLapMs;
+          }
         }
+        globalEntry.bestLapMs = globalBest || 0;
       }
 
       processRawApexPayload(dataStr) {
@@ -796,17 +842,15 @@
           const valueType = pipeIdx2 >= 0 ? rest.substring(0, pipeIdx2) : rest;
           const value = pipeIdx2 >= 0 ? rest.substring(pipeIdx2 + 1) : '';
 
-          // Init resets session rows (new session starting)
+          // Init resets transient session rows without incrementing session ID
           if (cellId === 'init') {
             this.sessionRows.clear();
-            this.currentSessionId += 1;
             this.isSessionFinishedOnTrack = false;
             if (this.isWaitingForNewSession) {
               this.isWaitingForNewSession = false;
               console.log('[Parser] NEW SESSION STARTED via init payload!');
               this.broadcastState('🔴 REGISTRANDO DATOS DE NUEVA SESIÓN EN VIVO...');
             }
-            console.log(`[Parser] INIT received - New Session #${this.currentSessionId}`);
             continue;
           }
 
