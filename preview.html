@@ -343,51 +343,27 @@
             Object.keys(parsed).forEach(kart => {
               const rawSessions = parsed[kart].sessions || [];
               
-              // Deduplicate any sessions that were duplicated for same driver/sessionId
-              const cleanSessionsMap = new Map();
+              // Clean and deduplicate any redundant session entries
+              const cleanSessions = [];
               rawSessions.forEach(s => {
-                const sKey = `${s.sessionId}_${s.driver || 'Piloto'}`;
-                if (!cleanSessionsMap.has(sKey)) {
-                  cleanSessionsMap.set(sKey, {
-                    sessionId: s.sessionId,
-                    driver: s.driver || 'Piloto',
-                    lapsMs: s.lapsMs ? [...s.lapsMs] : [],
-                    sessionAvgMs: s.sessionAvgMs || 0,
-                    bestLapMs: s.bestLapMs || 0,
-                    officialBestLapMs: s.officialBestLapMs || s.bestLapMs || 0,
-                    officialTotalLaps: s.officialTotalLaps || 0
-                  });
-                } else {
-                  const existing = cleanSessionsMap.get(sKey);
-                  (s.lapsMs || []).forEach(l => {
-                    if (typeof l === 'number' && l >= 35000 && l <= 600000 && !existing.lapsMs.includes(l)) {
-                      existing.lapsMs.push(l);
-                    }
-                  });
-                  if (s.officialBestLapMs > 0 && (!existing.officialBestLapMs || s.officialBestLapMs < existing.officialBestLapMs)) {
-                    existing.officialBestLapMs = s.officialBestLapMs;
-                  }
-                  if (s.officialTotalLaps > 0) {
-                    existing.officialTotalLaps = Math.max(existing.officialTotalLaps, s.officialTotalLaps);
-                  }
-                }
-              });
-
-              const cleanSessions = Array.from(cleanSessionsMap.values()).map(sess => {
-                const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
+                const validLaps = (s.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
                 const sumMs = validLaps.reduce((a, b) => a + b, 0);
                 const sessionAvgMs = validLaps.length > 0 ? Math.round(sumMs / validLaps.length) : 0;
                 const calcBest = validLaps.length > 0 ? Math.min(...validLaps) : 0;
-                const bestLapMs = (sess.officialBestLapMs && sess.officialBestLapMs > 0) ? sess.officialBestLapMs : calcBest;
-                return {
-                  sessionId: sess.sessionId,
-                  driver: sess.driver || 'Piloto',
+                const bestLapMs = (s.officialBestLapMs && s.officialBestLapMs > 0) 
+                  ? (calcBest > 0 ? Math.min(s.officialBestLapMs, calcBest) : s.officialBestLapMs)
+                  : calcBest;
+
+                cleanSessions.push({
+                  sessionId: cleanSessions.length + 1,
+                  driver: s.driver || 'Piloto',
                   lapsMs: validLaps,
                   sessionAvgMs,
                   bestLapMs,
-                  officialBestLapMs: sess.officialBestLapMs || bestLapMs,
-                  officialTotalLaps: sess.officialTotalLaps || 0
-                };
+                  officialBestLapMs: s.officialBestLapMs || bestLapMs,
+                  officialTotalLaps: s.officialTotalLaps || validLaps.length,
+                  lastLapCount: s.officialTotalLaps || validLaps.length
+                });
               });
 
               let globalBest = 0;
@@ -404,8 +380,7 @@
                 bestLapMs: globalBest,
                 officialBestLapMs: globalBest,
                 lastRecordedLapStr: parsed[kart].lastRecordedLapStr || '',
-                lastRecordedTotalLaps: parsed[kart].lastRecordedTotalLaps || 0,
-                lastRecordedSessionId: parsed[kart].lastRecordedSessionId || 0
+                lastRecordedTotalLaps: parsed[kart].lastRecordedTotalLaps || 0
               });
             });
           }
@@ -714,9 +689,9 @@
             drivers: new Set(),
             sessions: [],
             bestLapMs: 0,
+            officialBestLapMs: 0,
             lastRecordedLapStr: '',
-            lastRecordedTotalLaps: 0,
-            lastRecordedSessionId: 0
+            lastRecordedTotalLaps: 0
           });
         }
 
@@ -727,18 +702,24 @@
           if (d) globalEntry.drivers.add(d);
         });
 
-        // Get driver name for current row
         const currentDriver = Array.from(row.drivers)[0] || 'Piloto';
 
-        // Find or create current session for this kart
-        let activeSession = globalEntry.sessions.find(s => s.sessionId === this.currentSessionId);
-        if (!activeSession) {
+        // Retrieve active session for this kart
+        let activeSession = globalEntry.sessions[globalEntry.sessions.length - 1];
+        
+        // Detect new session for this specific kart when c13 Vueltas cell resets back to 1
+        const isNewTrackSession = activeSession && row.totalLaps === 1 && (activeSession.lastLapCount >= 2 || activeSession.officialTotalLaps >= 2);
+
+        if (!activeSession || isNewTrackSession) {
           activeSession = {
-            sessionId: this.currentSessionId,
+            sessionId: globalEntry.sessions.length + 1,
             driver: currentDriver,
             lapsMs: [],
             sessionAvgMs: 0,
-            bestLapMs: 0
+            bestLapMs: 0,
+            officialBestLapMs: 0,
+            officialTotalLaps: 0,
+            lastLapCount: 0
           };
           globalEntry.sessions.push(activeSession);
         } else if (currentDriver && currentDriver !== 'Piloto') {
@@ -757,12 +738,12 @@
           }
         }
 
-        // Track official total laps count from c13 (Vueltas cell) for this session
+        // Track official total laps count from c13 (Vueltas cell)
         if (row.totalLaps > 0) {
           activeSession.officialTotalLaps = Math.max(activeSession.officialTotalLaps || 0, row.totalLaps);
+          activeSession.lastLapCount = row.totalLaps;
         }
 
-        // Calculate total laps recorded across all sessions
         const totalLapsCountAllSess = globalEntry.sessions.reduce((sum, s) => sum + (s.lapsMs ? s.lapsMs.length : 0), 0);
 
         // INITIAL SEEDING: If this kart has 0 laps recorded across all sessions
@@ -772,7 +753,6 @@
           }
           if (row.lastLapStr) globalEntry.lastRecordedLapStr = row.lastLapStr;
           if (row.totalLaps > 0) globalEntry.lastRecordedTotalLaps = row.totalLaps;
-          globalEntry.lastRecordedSessionId = this.currentSessionId;
           this.updateSessionAverages(globalEntry);
           this.lastLapTimestamp = Date.now();
           return;
@@ -781,16 +761,15 @@
         // LIVE LAP DEDUPLICATION:
         const isNewLapString = row.lastLapStr && row.lastLapStr !== globalEntry.lastRecordedLapStr;
         const isNewLapCount = row.totalLaps && row.totalLaps > globalEntry.lastRecordedTotalLaps;
-        const isNewSession = globalEntry.lastRecordedSessionId !== this.currentSessionId;
+        const isSessionChanged = isNewTrackSession;
 
-        if (row.lastLapMs > 0 && (isNewLapString || isNewLapCount || isNewSession)) {
+        if (row.lastLapMs > 0 && (isNewLapString || isNewLapCount || isSessionChanged)) {
           activeSession.lapsMs.push(row.lastLapMs);
           globalEntry.lastRecordedLapStr = row.lastLapStr;
           if (row.totalLaps > 0) globalEntry.lastRecordedTotalLaps = row.totalLaps;
-          globalEntry.lastRecordedSessionId = this.currentSessionId;
           this.updateSessionAverages(globalEntry);
           this.lastLapTimestamp = Date.now();
-          console.log(`[Lap Acc] NEW LAP: Kart #${kartNum} Session #${this.currentSessionId} Lap #${activeSession.lapsMs.length} = ${row.lastLapStr}`);
+          console.log(`[Lap Acc] NEW LAP: Kart #${kartNum} Tanda #${activeSession.sessionId} Lap #${activeSession.lapsMs.length} = ${row.lastLapStr}`);
         }
       }
 
