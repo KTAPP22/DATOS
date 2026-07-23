@@ -804,15 +804,20 @@
           if (validLaps.length > 0) {
             const sumMs = validLaps.reduce((a, b) => a + b, 0);
             sess.sessionAvgMs = Math.round(sumMs / validLaps.length);
+            const calcBest = Math.min(...validLaps);
+            sess.bestLapMs = (sess.officialBestLapMs && sess.officialBestLapMs > 0) 
+              ? Math.min(sess.officialBestLapMs, calcBest) 
+              : calcBest;
+          } else if (sess.officialBestLapMs && sess.officialBestLapMs > 0) {
+            sess.sessionAvgMs = 0;
+            sess.bestLapMs = sess.officialBestLapMs;
           } else {
             sess.sessionAvgMs = 0;
+            sess.bestLapMs = 0;
           }
 
-          const sessBest = sess.officialBestLapMs || 0;
-          sess.bestLapMs = sessBest;
-
-          if (sessBest > 0 && (!globalBest || sessBest < globalBest)) {
-            globalBest = sessBest;
+          if (sess.bestLapMs > 0 && (!globalBest || sess.bestLapMs < globalBest)) {
+            globalBest = sess.bestLapMs;
           }
         });
 
@@ -1377,21 +1382,25 @@
                         {kart.sessions && kart.sessions.length > 0 ? (
                           <div className="space-y-1.5">
                             {kart.sessions.map((sess, sIdx) => (
-                              <div key={sIdx} className="bg-zinc-900/60 border border-zinc-800 rounded-lg p-2 text-[10px] sm:text-[11px] flex items-center justify-between gap-2">
-                                <div className="min-w-0">
-                                  <div className="font-bold text-white flex items-center gap-1.5">
+                              <div key={sIdx} className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-2.5 text-[10px] sm:text-[11px] flex items-center justify-between gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
                                     <span className="bg-purple-950 text-race-purple border border-purple-800 px-1.5 py-0.5 rounded text-[9px] font-mono font-black">
                                       Tanda #{sIdx + 1}
                                     </span>
-                                    <span className="text-zinc-200 truncate font-bold">👤 {sess.driver || 'Piloto'}</span>
+                                    <span className="text-white font-extrabold truncate">👤 {sess.driver || 'Piloto'}</span>
+                                    {sess.bestLapMs > 0 && (
+                                      <span className="bg-zinc-950 border border-zinc-700 text-zinc-300 font-mono text-[9px] px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1">
+                                        <span>⚡ Mejor:</span>
+                                        <strong className="text-race-purple font-black">{formatLapTime(sess.bestLapMs)}</strong>
+                                      </span>
+                                    )}
                                   </div>
-                                  <div className="text-[9px] text-zinc-400 mt-0.5 font-mono">
-                                    Vueltas: <span className="text-white font-bold">{sess.lapsMs ? sess.lapsMs.length : 0}</span> | Mejor: <span className="text-white font-bold">{formatLapTime(sess.bestLapMs)}</span>
+                                  <div className="text-[9px] text-zinc-400 mt-1 font-mono flex items-center gap-2">
+                                    <span>Vueltas: <strong className="text-white">{sess.officialTotalLaps || (sess.lapsMs ? sess.lapsMs.length : 0)}</strong></span>
+                                    <span>•</span>
+                                    <span>Media Tanda: <strong className="text-race-purple font-bold">{formatLapTime(sess.sessionAvgMs)}</strong></span>
                                   </div>
-                                </div>
-                                <div className="text-right shrink-0">
-                                  <div className="text-[8px] text-zinc-500 font-bold uppercase">MEDIA TANDA</div>
-                                  <div className="text-xs sm:text-sm font-black text-race-purple">{formatLapTime(sess.sessionAvgMs)}</div>
                                 </div>
                               </div>
                             ))}
