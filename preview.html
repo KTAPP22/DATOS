@@ -745,15 +745,19 @@
           activeSession.driver = currentDriver;
         }
 
-        // Directly set official best lap from c10 cell
+        // Update official best lap ONLY if row.bestLapMs is faster/better than existing best lap
         if (row.bestLapMs > 0) {
-          activeSession.officialBestLapMs = row.bestLapMs;
-          activeSession.bestLapMs = row.bestLapMs;
-          globalEntry.officialBestLapMs = row.bestLapMs;
-          globalEntry.bestLapMs = row.bestLapMs;
+          if (!activeSession.officialBestLapMs || row.bestLapMs < activeSession.officialBestLapMs) {
+            activeSession.officialBestLapMs = row.bestLapMs;
+            activeSession.bestLapMs = row.bestLapMs;
+          }
+          if (!globalEntry.officialBestLapMs || row.bestLapMs < globalEntry.officialBestLapMs) {
+            globalEntry.officialBestLapMs = row.bestLapMs;
+            globalEntry.bestLapMs = row.bestLapMs;
+          }
         }
 
-        // Track official total laps count from c13 (Vueltas cell)
+        // Track official total laps count from c13 (Vueltas cell) for this session
         if (row.totalLaps > 0) {
           activeSession.officialTotalLaps = Math.max(activeSession.officialTotalLaps || 0, row.totalLaps);
         }
@@ -791,7 +795,8 @@
       }
 
       updateSessionAverages(globalEntry) {
-        let globalBest = 0;
+        let globalBest = globalEntry.officialBestLapMs || 0;
+        
         globalEntry.sessions.forEach(sess => {
           // Laps for session average MUST come strictly from c9 (Última vuelta / lastLapMs)
           const validLaps = (sess.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
@@ -803,7 +808,6 @@
             sess.sessionAvgMs = 0;
           }
 
-          // Best lap for session comes DIRECTLY from c10 cell
           const sessBest = sess.officialBestLapMs || 0;
           sess.bestLapMs = sessBest;
 
@@ -812,8 +816,8 @@
           }
         });
 
-        // Kart best lap comes DIRECTLY from c10 cell
-        globalEntry.bestLapMs = globalBest || globalEntry.officialBestLapMs || 0;
+        // Overall best lap ONLY updates if a better (faster/smaller) best lap is recorded
+        globalEntry.bestLapMs = globalBest;
       }
 
       processRawApexPayload(dataStr) {
@@ -1072,8 +1076,13 @@
           let totalLapsAllSessions = 0;
 
           if (validSessions.length > 0) {
-            const sumSessionAvgs = validSessions.reduce((sum, s) => sum + s.sessionAvgMs, 0);
-            overallAvgMs = Math.round(sumSessionAvgs / validSessions.length);
+            // Rolling average of session averages:
+            // Media de las nuevas vueltas de la tanda, y luego media con la media ya puesta
+            let rollingAvgMs = validSessions[0].sessionAvgMs;
+            for (let i = 1; i < validSessions.length; i++) {
+              rollingAvgMs = Math.round((rollingAvgMs + validSessions[i].sessionAvgMs) / 2);
+            }
+            overallAvgMs = rollingAvgMs;
           }
 
           totalLapsAllSessions = sessions.reduce((sum, s) => {
