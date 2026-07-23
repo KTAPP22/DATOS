@@ -93,29 +93,32 @@
     ];
 
     function parseTimeToMs(timeStr) {
-      if (!timeStr || timeStr === '--.---' || timeStr === '') return 0;
+      if (!timeStr || timeStr === '--.---' || timeStr === '' || timeStr === '0') return 0;
       const str = String(timeStr).trim();
       
       // Reject any interval or gap value (starts with + or -, or contains +, or contains 'L'/'Lap')
       if (str.startsWith('+') || str.startsWith('-') || str.includes('+') || str.toLowerCase().includes('l')) return 0;
 
-      // Full lap times in Campillos & Lucas Guerrero always have a minute colon (e.g. 1:33.029)
-      if (!str.includes(':')) return 0;
-
       const clean = str.replace(/[^0-9:.]/g, '').trim();
       if (!clean) return 0;
 
+      let ms = 0;
       const parts = clean.split(':');
-      if (parts.length !== 2) return 0;
+      if (parts.length === 2) {
+        const min = parseFloat(parts[0]);
+        const sec = parseFloat(parts[1]);
+        if (!isNaN(min) && !isNaN(sec)) {
+          ms = Math.round((min * 60 + sec) * 1000);
+        }
+      } else if (parts.length === 1) {
+        const sec = parseFloat(parts[0]);
+        if (!isNaN(sec)) {
+          ms = Math.round(sec * 1000);
+        }
+      }
 
-      const minutes = parseFloat(parts[0]);
-      const seconds = parseFloat(parts[1]);
-      if (isNaN(minutes) || isNaN(seconds)) return 0;
-
-      const ms = Math.round((minutes * 60 + seconds) * 1000);
-
-      // Valid kart lap times in Campillos & Lucas Guerrero are between 45,000ms (45s) and 600,000ms (10m)
-      if (ms < 45000 || ms > 600000) return 0;
+      // Valid kart lap times in Campillos & Lucas Guerrero are between 35,000ms (35s) and 600,000ms (10m)
+      if (ms < 35000 || ms > 600000) return 0;
 
       return ms;
     }
@@ -1033,27 +1036,30 @@
           if (validSessions.length > 0) {
             const sumSessionAvgs = validSessions.reduce((sum, s) => sum + s.sessionAvgMs, 0);
             overallAvgMs = Math.round(sumSessionAvgs / validSessions.length);
-            totalLapsAllSessions = sessions.reduce((sum, s) => {
-              const lapsCell = s.officialTotalLaps || 0;
-              const lapsArray = s.lapsMs ? s.lapsMs.length : 0;
-              return sum + Math.max(lapsCell, lapsArray);
-            }, 0);
           }
 
-          if (overallAvgMs > 0 || entry.bestLapMs > 0) {
-            results.push({
-              kartNumber: kartNum,
-              drivers: Array.from(entry.drivers),
-              sessions: sessions,
-              sessionsCount: sessions.length,
-              avgLapMs: overallAvgMs || entry.bestLapMs || 0,
-              bestLapMs: entry.bestLapMs || 0,
-              totalLaps: totalLapsAllSessions
-            });
-          }
+          totalLapsAllSessions = sessions.reduce((sum, s) => {
+            const lapsCell = s.officialTotalLaps || 0;
+            const lapsArray = s.lapsMs ? s.lapsMs.length : 0;
+            return sum + Math.max(lapsCell, lapsArray);
+          }, 0);
+
+          // Include all karts on track immediately so user sees active karts even before 1st completed lap
+          results.push({
+            kartNumber: kartNum,
+            drivers: Array.from(entry.drivers),
+            sessions: sessions,
+            sessionsCount: sessions.length,
+            avgLapMs: overallAvgMs || entry.bestLapMs || 0,
+            bestLapMs: entry.bestLapMs || 0,
+            totalLaps: totalLapsAllSessions
+          });
         });
 
         return results.sort((a, b) => {
+          if (a.avgLapMs === 0 && b.avgLapMs === 0) {
+            return parseInt(a.kartNumber, 10) - parseInt(b.kartNumber, 10);
+          }
           if (a.avgLapMs === 0) return 1;
           if (b.avgLapMs === 0) return -1;
           return a.avgLapMs - b.avgLapMs;
