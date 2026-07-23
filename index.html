@@ -722,6 +722,9 @@
             lastLapCount: 0
           };
           globalEntry.sessions.push(activeSession);
+          // Reset session lap trackers so laps in the new session accumulate cleanly on top of previous sessions
+          globalEntry.lastRecordedLapStr = '';
+          globalEntry.lastRecordedTotalLaps = 0;
         } else if (currentDriver && currentDriver !== 'Piloto') {
           activeSession.driver = currentDriver;
         }
