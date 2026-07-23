@@ -745,12 +745,12 @@
           activeSession.driver = currentDriver;
         }
 
-        // Track official best lap from c10
+        // Directly set official best lap from c10 cell
         if (row.bestLapMs > 0) {
           activeSession.officialBestLapMs = row.bestLapMs;
-          if (!globalEntry.officialBestLapMs || row.bestLapMs < globalEntry.officialBestLapMs) {
-            globalEntry.officialBestLapMs = row.bestLapMs;
-          }
+          activeSession.bestLapMs = row.bestLapMs;
+          globalEntry.officialBestLapMs = row.bestLapMs;
+          globalEntry.bestLapMs = row.bestLapMs;
         }
 
         // Track official total laps count from c13 (Vueltas cell)
@@ -799,27 +799,21 @@
           if (validLaps.length > 0) {
             const sumMs = validLaps.reduce((a, b) => a + b, 0);
             sess.sessionAvgMs = Math.round(sumMs / validLaps.length);
-            const calcBest = Math.min(...validLaps);
-            sess.bestLapMs = (sess.officialBestLapMs && sess.officialBestLapMs > 0) ? sess.officialBestLapMs : calcBest;
-          } else if (sess.officialBestLapMs && sess.officialBestLapMs > 0) {
-            sess.sessionAvgMs = 0;
-            sess.bestLapMs = sess.officialBestLapMs;
           } else {
             sess.sessionAvgMs = 0;
-            sess.bestLapMs = 0;
           }
 
-          if (sess.bestLapMs > 0 && (!globalBest || sess.bestLapMs < globalBest)) {
-            globalBest = sess.bestLapMs;
+          // Best lap for session comes DIRECTLY from c10 cell
+          const sessBest = sess.officialBestLapMs || 0;
+          sess.bestLapMs = sessBest;
+
+          if (sessBest > 0 && (!globalBest || sessBest < globalBest)) {
+            globalBest = sessBest;
           }
         });
 
-        if (globalEntry.officialBestLapMs && globalEntry.officialBestLapMs > 0) {
-          if (!globalBest || globalEntry.officialBestLapMs < globalBest) {
-            globalBest = globalEntry.officialBestLapMs;
-          }
-        }
-        globalEntry.bestLapMs = globalBest || 0;
+        // Kart best lap comes DIRECTLY from c10 cell
+        globalEntry.bestLapMs = globalBest || globalEntry.officialBestLapMs || 0;
       }
 
       processRawApexPayload(dataStr) {
