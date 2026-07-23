@@ -245,14 +245,31 @@
         
         this.configHost = 'live-data.apex-timing.com'; 
         
-        // Dynamic & fallback column index mappings
-        this.columnMap = {
-          no: 'c4',
-          dr: 'c5',
-          llp: 'c9',
-          blp: 'c10',
-          tlp: 'c13'
-        };
+        // Dynamic & circuit-specific default column index mappings
+        if (this.circuit.id === 'kartodromo-lucas-guerrero') {
+          this.columnMap = {
+            no: 'c4',
+            dr: 'c5',
+            llp: 'c6',
+            gap: 'c7',
+            int: 'c8',
+            blp: 'c9',
+            tlp: 'c10'
+          };
+        } else {
+          this.columnMap = {
+            no: 'c4',
+            dr: 'c5',
+            s1: 'c6',
+            s2: 'c7',
+            s3: 'c8',
+            llp: 'c9',
+            blp: 'c10',
+            gap: 'c11',
+            int: 'c12',
+            tlp: 'c13'
+          };
+        }
         
         // HTTP polling sequence indexes
         this.pollInit = 0;
@@ -987,12 +1004,14 @@
       applyColumnValue(entry, colSuffix, value) {
         if (!value || !colSuffix) return false;
         
-        // Explicitly ignore sector columns, gap/interval columns, and position columns
+        // Ignore position and internal status columns
+        if (colSuffix === 'c1' || colSuffix === 'c2' || colSuffix === 'c3') {
+          return false;
+        }
+
+        // Ignore gap and interval columns dynamically
         if (colSuffix === this.columnMap.gap || colSuffix === this.columnMap.int ||
-            colSuffix === this.columnMap.s1 || colSuffix === this.columnMap.s2 || colSuffix === this.columnMap.s3 ||
-            colSuffix === 'c1' || colSuffix === 'c2' || colSuffix === 'c3' ||
-            colSuffix === 'c6' || colSuffix === 'c7' || colSuffix === 'c8' || 
-            colSuffix === 'c11' || colSuffix === 'c12') {
+            colSuffix === this.columnMap.s1 || colSuffix === this.columnMap.s2 || colSuffix === this.columnMap.s3) {
           return false;
         }
 
@@ -1012,16 +1031,20 @@
             return true;
           }
         }
-        // Total Laps count
-        else if (colSuffix === this.columnMap.tlp || colSuffix === 'c13') {
+        // Total Laps count (Vueltas cell)
+        else if (colSuffix === this.columnMap.tlp || 
+                (this.circuit.id === 'kartodromo-lucas-guerrero' && colSuffix === 'c10') ||
+                (this.circuit.id === 'kartcenter-campillos' && colSuffix === 'c13')) {
           const totalLaps = parseInt(value.replace(/[^\d]/g, ''), 10);
           if (!isNaN(totalLaps) && totalLaps >= 0) {
             entry.totalLaps = totalLaps;
             return true;
           }
         }
-        // Last lap time
-        else if (colSuffix === this.columnMap.llp || colSuffix === 'c9') {
+        // Last lap time (Última vuelta cell)
+        else if (colSuffix === this.columnMap.llp || 
+                (this.circuit.id === 'kartodromo-lucas-guerrero' && colSuffix === 'c6') ||
+                (this.circuit.id === 'kartcenter-campillos' && colSuffix === 'c9')) {
           const lastMs = parseTimeToMs(value);
           if (lastMs > 0) {
             entry.lastLapStr = value.trim();
@@ -1029,8 +1052,10 @@
             return true;
           }
         }
-        // Best lap time
-        else if (colSuffix === this.columnMap.blp || colSuffix === 'c10') {
+        // Best lap time (Mejor vuelta cell)
+        else if (colSuffix === this.columnMap.blp || 
+                (this.circuit.id === 'kartodromo-lucas-guerrero' && colSuffix === 'c9') ||
+                (this.circuit.id === 'kartcenter-campillos' && colSuffix === 'c10')) {
           const bestMs = parseTimeToMs(value);
           if (bestMs > 0) {
             entry.bestLapMs = bestMs;
