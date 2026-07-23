@@ -123,6 +123,32 @@
       return ms;
     }
 
+    // Helper to check if driver name is just the kart number / invalid placeholder
+    function isDriverJustKartNumber(driverName, kartNumber) {
+      if (!driverName) return true;
+      const nameClean = String(driverName).replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!nameClean || nameClean.length <= 1 || nameClean === 'Piloto') return true;
+
+      // Extract letters and digits
+      const digitsInName = nameClean.replace(/[^\d]/g, '');
+      const lettersInName = nameClean.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ]/g, '').trim().toLowerCase();
+
+      // If driver name contains NO letters at all (only digits or symbols e.g. "71", "071", "#71") -> it's just kart number!
+      if (lettersInName.length === 0) return true;
+
+      // If letters in name are just kart prefixes like "K", "Kart", "Karts", "No", "Num", "Numero"
+      if (lettersInName === 'k' || lettersInName === 'kart' || lettersInName === 'karts' || lettersInName === 'no' || lettersInName === 'num' || lettersInName === 'numero') {
+        return true;
+      }
+
+      // If digits in name match the kart number and letter length is very short (e.g. "Kart 71", "K71")
+      if (kartNumber && digitsInName === kartNumber.replace(/[^\d]/g, '')) {
+        if (lettersInName.length <= 4) return true;
+      }
+
+      return false;
+    }
+
     function formatLapTime(ms) {
       if (!ms || isNaN(ms) || ms === 0) return "--.---";
       const totalSeconds = ms / 1000;
@@ -358,12 +384,20 @@
           if (savedKarts) {
             const parsed = JSON.parse(savedKarts);
             Object.keys(parsed).forEach(kart => {
+              const rawDrivers = parsed[kart].drivers || [];
+              const validDriverSet = new Set(rawDrivers.filter(d => !isDriverJustKartNumber(d, kart)));
+              
+              // Do not load karts from storage if they don't have a valid person driver
+              if (validDriverSet.size === 0) return;
+
               const rawSessions = parsed[kart].sessions || [];
               
               // Clean and deduplicate any redundant session entries (merge duplicate sessions for same driver)
               const cleanSessions = [];
               rawSessions.forEach(s => {
-                const driverName = s.driver || 'Piloto';
+                const driverName = s.driver || '';
+                if (isDriverJustKartNumber(driverName, kart)) return;
+
                 const validLaps = (s.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
                 const sTotalLaps = Math.max(s.officialTotalLaps || 0, validLaps.length);
                 const calcBest = validLaps.length > 0 ? Math.min(...validLaps) : 0;
@@ -403,6 +437,8 @@
                 }
               });
 
+              if (cleanSessions.length === 0) return;
+
               let globalBest = 0;
               cleanSessions.forEach(s => {
                 if (s.bestLapMs > 0 && (!globalBest || s.bestLapMs < globalBest)) {
@@ -412,7 +448,7 @@
 
               this.globalKarts.set(kart, {
                 kartNumber: parsed[kart].kartNumber || kart,
-                drivers: new Set(parsed[kart].drivers || []),
+                drivers: validDriverSet,
                 sessions: cleanSessions,
                 bestLapMs: globalBest,
                 officialBestLapMs: globalBest,
@@ -720,6 +756,16 @@
         if (!row || !row.kartNumber || row.kartNumber === '' || row.kartNumber === '0') return;
 
         const kartNum = row.kartNumber;
+
+        // Filter out drivers that are just the kart number / placeholder
+        const validDrivers = Array.from(row.drivers).filter(d => !isDriverJustKartNumber(d, kartNum));
+        const currentDriver = validDrivers[0] || '';
+
+        // DO NOT collect data for this kart if driver name is just the kart number or missing!
+        if (!currentDriver || isDriverJustKartNumber(currentDriver, kartNum)) {
+          return;
+        }
+
         if (!this.globalKarts.has(kartNum)) {
           this.globalKarts.set(kartNum, {
             kartNumber: kartNum,
@@ -735,18 +781,16 @@
         const globalEntry = this.globalKarts.get(kartNum);
 
         // Track driver names
-        row.drivers.forEach(d => {
+        validDrivers.forEach(d => {
           if (d) globalEntry.drivers.add(d);
         });
-
-        const currentDriver = Array.from(row.drivers)[0] || 'Piloto';
 
         // Retrieve active session for this kart
         let activeSession = globalEntry.sessions[globalEntry.sessions.length - 1];
         const now = Date.now();
         
         // Detect new session ONLY when driver changes or when kart lap count resets to 1 after a significant delay (>30s)
-        const isDriverChanged = activeSession && currentDriver && currentDriver !== 'Piloto' && activeSession.driver !== currentDriver && activeSession.driver !== 'Piloto';
+        const isDriverChanged = activeSession && currentDriver && activeSession.driver !== currentDriver && activeSession.driver !== 'Piloto';
         const isLapResetAfterDelay = activeSession && row.totalLaps === 1 && (activeSession.lastLapCount >= 3 || activeSession.officialTotalLaps >= 3) && (now - (activeSession.lastTimestamp || 0) > 30000);
 
         const isNewTrackSession = !activeSession || isDriverChanged || isLapResetAfterDelay;
@@ -767,7 +811,7 @@
           // Reset session lap trackers so laps in the new session accumulate cleanly on top of previous sessions
           globalEntry.lastRecordedLapStr = '';
           globalEntry.lastRecordedTotalLaps = 0;
-        } else if (currentDriver && currentDriver !== 'Piloto') {
+        } else if (currentDriver) {
           activeSession.driver = currentDriver;
         }
 
@@ -1053,7 +1097,7 @@
         // Driver name
         else if (colSuffix === this.columnMap.dr || colSuffix === 'c5') {
           const driverName = value.replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
-          if (driverName && driverName.length > 1 && !driverName.includes('Piloto') && driverName !== 'Piloto') {
+          if (driverName && !isDriverJustKartNumber(driverName, entry.kartNumber)) {
             entry.drivers.add(driverName);
             return true;
           }
