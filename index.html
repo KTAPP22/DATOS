@@ -360,27 +360,47 @@
             Object.keys(parsed).forEach(kart => {
               const rawSessions = parsed[kart].sessions || [];
               
-              // Clean and deduplicate any redundant session entries
+              // Clean and deduplicate any redundant session entries (merge duplicate sessions for same driver)
               const cleanSessions = [];
               rawSessions.forEach(s => {
+                const driverName = s.driver || 'Piloto';
                 const validLaps = (s.lapsMs || []).filter(l => typeof l === 'number' && l >= 35000 && l <= 600000);
-                const sumMs = validLaps.reduce((a, b) => a + b, 0);
-                const sessionAvgMs = validLaps.length > 0 ? Math.round(sumMs / validLaps.length) : 0;
+                const sTotalLaps = Math.max(s.officialTotalLaps || 0, validLaps.length);
                 const calcBest = validLaps.length > 0 ? Math.min(...validLaps) : 0;
-                const bestLapMs = (s.officialBestLapMs && s.officialBestLapMs > 0) 
+                const sBestLapMs = (s.officialBestLapMs && s.officialBestLapMs > 0)
                   ? (calcBest > 0 ? Math.min(s.officialBestLapMs, calcBest) : s.officialBestLapMs)
                   : calcBest;
 
-                cleanSessions.push({
-                  sessionId: cleanSessions.length + 1,
-                  driver: s.driver || 'Piloto',
-                  lapsMs: validLaps,
-                  sessionAvgMs,
-                  bestLapMs,
-                  officialBestLapMs: s.officialBestLapMs || bestLapMs,
-                  officialTotalLaps: s.officialTotalLaps || validLaps.length,
-                  lastLapCount: s.officialTotalLaps || validLaps.length
-                });
+                const lastSess = cleanSessions[cleanSessions.length - 1];
+                if (lastSess && lastSess.driver === driverName) {
+                  // Merge duplicate session into existing session
+                  validLaps.forEach(l => {
+                    if (!lastSess.lapsMs.includes(l)) lastSess.lapsMs.push(l);
+                  });
+                  lastSess.officialTotalLaps = Math.max(lastSess.officialTotalLaps || 0, sTotalLaps, lastSess.lapsMs.length);
+                  lastSess.lastLapCount = lastSess.officialTotalLaps;
+                  if (sBestLapMs > 0 && (!lastSess.bestLapMs || sBestLapMs < lastSess.bestLapMs)) {
+                    lastSess.bestLapMs = sBestLapMs;
+                    lastSess.officialBestLapMs = sBestLapMs;
+                  }
+                  if (lastSess.lapsMs.length > 0) {
+                    const sumMs = lastSess.lapsMs.reduce((a, b) => a + b, 0);
+                    lastSess.sessionAvgMs = Math.round(sumMs / lastSess.lapsMs.length);
+                  }
+                } else {
+                  const sumMs = validLaps.reduce((a, b) => a + b, 0);
+                  const sessionAvgMs = validLaps.length > 0 ? Math.round(sumMs / validLaps.length) : 0;
+                  cleanSessions.push({
+                    sessionId: cleanSessions.length + 1,
+                    driver: driverName,
+                    lapsMs: validLaps,
+                    sessionAvgMs,
+                    bestLapMs: sBestLapMs,
+                    officialBestLapMs: sBestLapMs,
+                    officialTotalLaps: sTotalLaps,
+                    lastLapCount: sTotalLaps
+                  });
+                }
               });
 
               let globalBest = 0;
@@ -723,11 +743,15 @@
 
         // Retrieve active session for this kart
         let activeSession = globalEntry.sessions[globalEntry.sessions.length - 1];
+        const now = Date.now();
         
-        // Detect new session for this specific kart when c13 Vueltas cell resets back to 1
-        const isNewTrackSession = activeSession && row.totalLaps === 1 && (activeSession.lastLapCount >= 2 || activeSession.officialTotalLaps >= 2);
+        // Detect new session ONLY when driver changes or when kart lap count resets to 1 after a significant delay (>30s)
+        const isDriverChanged = activeSession && currentDriver && currentDriver !== 'Piloto' && activeSession.driver !== currentDriver && activeSession.driver !== 'Piloto';
+        const isLapResetAfterDelay = activeSession && row.totalLaps === 1 && (activeSession.lastLapCount >= 3 || activeSession.officialTotalLaps >= 3) && (now - (activeSession.lastTimestamp || 0) > 30000);
 
-        if (!activeSession || isNewTrackSession) {
+        const isNewTrackSession = !activeSession || isDriverChanged || isLapResetAfterDelay;
+
+        if (isNewTrackSession) {
           activeSession = {
             sessionId: globalEntry.sessions.length + 1,
             driver: currentDriver,
@@ -736,7 +760,8 @@
             bestLapMs: 0,
             officialBestLapMs: 0,
             officialTotalLaps: 0,
-            lastLapCount: 0
+            lastLapCount: 0,
+            lastTimestamp: now
           };
           globalEntry.sessions.push(activeSession);
           // Reset session lap trackers so laps in the new session accumulate cleanly on top of previous sessions
@@ -745,6 +770,8 @@
         } else if (currentDriver && currentDriver !== 'Piloto') {
           activeSession.driver = currentDriver;
         }
+
+        activeSession.lastTimestamp = now;
 
         // Update official best lap ONLY if row.bestLapMs is faster/better than existing best lap
         if (row.bestLapMs > 0) {
